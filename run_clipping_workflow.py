@@ -1,0 +1,457 @@
+"""
+run_clipping_workflow.py
+========================
+REAL end-to-end workflow: Long-to-Shorts clip generation from a local video
+or a YouTube URL.
+
+Usage
+-----
+    # Local video (existing behaviour)
+    python run_clipping_workflow.py [VIDEO_PATH] [TRANSCRIPT_TEXT_OR_PATH] [TOP_N]
+
+    # YouTube URL — downloads the video and fetches the transcript automatically
+    python run_clipping_workflow.py <YouTube-URL> [TOP_N]
+
+Defaults
+--------
+    VIDEO_PATH  = assets/ailover.mp4
+    TOP_N       = 3
+
+How it works (YouTube URL path)
+--------------------------------
+1. Detects that the first argument is a YouTube URL.
+2. Extracts the video ID and downloads the video to output/downloads/<id>.mp4
+   using tools.youtube.downloader (yt-dlp under the hood).
+3. Fetches the transcript from YouTube captions via youtube-transcript-api
+   (no Whisper, no OAuth required).
+4. Runs the full LangGraph Long-to-Shorts pipeline:
+      AnalyzeVideoNode  → ClippingLogicNode  → ContentGenNode → IntroAttachNode
+5. Prints a summary of every clip with path, hook score, title, and summary.
+6. All clips are written to  output/clips/
+
+How it works (local video path)
+---------------------------------
+1. Probes the video with ffmpeg to confirm it is readable.
+2. Accepts a transcript string or path to a .txt file.
+   If no transcript is supplied, it uses Whisper (base model) to auto-transcribe
+   the first 10 minutes of audio from the video.
+3–6. Same as above.
+
+Dependencies already in requirements.txt:
+    ffmpeg-python, openai-whisper (for auto-transcription fallback),
+    yt-dlp, youtube-transcript-api
+"""
+
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+# ------------------------------------------------------------------
+# Ensure the project root is on sys.path when run directly
+# ------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).parent.resolve()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# ------------------------------------------------------------------
+# Load .env  (optional – graceful if missing)
+# ------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("[ENV] .env loaded")
+except ImportError:
+    print("[ENV] python-dotenv not installed; relying on shell environment")
+
+# ------------------------------------------------------------------
+# Pretty-print helpers
+# ------------------------------------------------------------------
+SEP  = "=" * 68
+SEP2 = "-" * 68
+
+def section(title: str):
+    print(f"\n{SEP}")
+    print(f"  {title}")
+    print(SEP)
+
+def ok(msg: str):
+    print(f"  ✓  {msg}")
+
+def warn(msg: str):
+    print(f"  ⚠  {msg}")
+
+def err(msg: str):
+    print(f"  ✗  {msg}")
+
+def info(msg: str):
+    print(f"     {msg}")
+
+
+# ------------------------------------------------------------------
+# YouTube URL detection helper
+# ------------------------------------------------------------------
+
+_YT_URL_RE = re.compile(
+    r"(https?://)?(www\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)/",
+    re.IGNORECASE,
+)
+
+
+def is_youtube_url(s: str) -> bool:
+    """Return True if *s* looks like a YouTube URL."""
+    return bool(_YT_URL_RE.search(s))
+
+
+# ------------------------------------------------------------------
+# Step 0 (YouTube path): Download video + fetch transcript from YT
+# ------------------------------------------------------------------
+
+def get_youtube_inputs(url: str) -> tuple[str, str]:
+    """
+    Download a YouTube video and fetch its transcript.
+
+    Returns:
+        (local_video_path, transcript_text)
+    """
+    from tools.youtube.transcript import extract_video_id, fetch_transcript
+    from tools.youtube.downloader import download_video
+
+    section("STEP 0 — YouTube: downloading video and fetching transcript")
+    info(f"URL: {url}")
+
+    # Parse video ID
+    video_id = extract_video_id(url)
+    ok(f"Video ID : {video_id}")
+
+    # Download destination
+    downloads_dir = Path("output") / "downloads"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    video_path = str(downloads_dir / f"{video_id}.mp4")
+
+    if Path(video_path).exists():
+        warn(f"Video already cached at {video_path}; skipping download.")
+    else:
+        info(f"Downloading to {video_path} …")
+        download_video(url, video_path)
+        ok(f"Downloaded → {video_path}")
+
+    # Fetch transcript via youtube-transcript-api (no Whisper, no OAuth)
+    info("Fetching YouTube transcript …")
+    try:
+        transcript = fetch_transcript(url)
+        ok(f"Transcript fetched via YouTube captions  ({len(transcript)} chars)")
+        info(f"Preview: {transcript[:200]}…")
+    except RuntimeError as yt_exc:
+        warn(f"YouTube transcript unavailable: {yt_exc}")
+        warn("Falling back to Whisper auto-transcription …")
+        transcript = _whisper_transcribe(video_path)
+
+    return video_path, transcript
+
+
+# ------------------------------------------------------------------
+# Step 1: Probe the video
+# ------------------------------------------------------------------
+
+def probe_video(video_path: str) -> dict:
+    """Return ffmpeg probe dict; raise if file is unreadable."""
+    import ffmpeg
+    section("STEP 1 — Probing video")
+    print(f"  Path : {video_path}")
+    if not Path(video_path).exists():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    probe = ffmpeg.probe(video_path)
+    fmt   = probe["format"]
+    duration = float(fmt.get("duration", 0))
+    size_mb  = int(fmt.get("size", 0)) / (1024 * 1024)
+
+    _MIN_DURATION_SECONDS = 30
+    if duration < _MIN_DURATION_SECONDS:
+        raise ValueError(
+            f"Video must be at least {_MIN_DURATION_SECONDS} seconds long; "
+            f"got {duration:.1f}s. Path: {video_path}"
+        )
+
+    ok(f"Duration  : {duration:.1f}s  ({duration / 60:.1f} min)")
+    ok(f"File size : {size_mb:.1f} MB")
+    ok(f"Format    : {fmt.get('format_name', '?')}")
+
+    for s in probe["streams"]:
+        codec_type = s.get("codec_type", "?")
+        codec_name = s.get("codec_name", "?")
+        if codec_type == "video":
+            w, h   = s.get("width", "?"), s.get("height", "?")
+            fps    = s.get("r_frame_rate", "?/1")
+            try:
+                num, den = fps.split("/")
+                fps_val = f"{int(num)//int(den)} fps"
+            except Exception:
+                fps_val = fps
+            ok(f"Video     : {codec_name}  {w}x{h}  {fps_val}")
+        elif codec_type == "audio":
+            sr = s.get("sample_rate", "?")
+            ok(f"Audio     : {codec_name}  {sr} Hz")
+
+    return probe
+
+
+# ------------------------------------------------------------------
+# Shared Whisper helper (used by both paths as a fallback)
+# ------------------------------------------------------------------
+
+def _whisper_transcribe(video_path: str, max_minutes: int = 10) -> str:
+    """
+    Auto-transcribe *video_path* using Whisper (base model).
+    Extracts the first *max_minutes* of audio, runs Whisper, and returns
+    the transcript string.
+    """
+    import ffmpeg as _ffmpeg
+    import tempfile
+
+    warn(f"Auto-transcribing first {max_minutes} min of audio with Whisper …")
+    warn("This may take 30–120 seconds depending on hardware.")
+
+    tmp_audio = tempfile.mktemp(suffix=".wav")
+    info(f"Extracting audio → {tmp_audio}")
+    (
+        _ffmpeg
+        .input(video_path, ss=0, t=max_minutes * 60)
+        .output(tmp_audio, ac=1, ar=16000, format="wav")
+        .overwrite_output()
+        .run(capture_stdout=True, capture_stderr=True)
+    )
+    ok(f"Audio extracted ({max_minutes} min segment)")
+
+    import whisper
+    info("Loading Whisper base model …")
+    model = whisper.load_model("base")
+    info("Transcribing …")
+    t0 = time.time()
+    result = model.transcribe(tmp_audio)
+    elapsed = time.time() - t0
+    text = result.get("text", "").strip()
+
+    ok(f"Whisper done in {elapsed:.1f}s  ({len(text)} chars)")
+    info(f"Preview: {text[:200]}…")
+
+    try:
+        os.remove(tmp_audio)
+    except OSError:
+        pass
+
+    return text
+
+
+# ------------------------------------------------------------------
+# Step 2: Get transcript
+# ------------------------------------------------------------------
+
+def get_transcript(transcript_arg: str | None, video_path: str, max_minutes: int = 10) -> str:
+    """
+    Return a transcript string.
+    Priority:
+      1. transcript_arg is a .txt path → read file
+      2. transcript_arg is non-empty text → use directly
+      3. transcript_arg is None → auto-transcribe with Whisper
+    """
+    section("STEP 2 — Getting transcript")
+
+    if transcript_arg:
+        p = Path(transcript_arg)
+        if p.exists() and p.suffix == ".txt":
+            text = p.read_text(encoding="utf-8")
+            ok(f"Loaded transcript from {p.name}  ({len(text)} chars)")
+            return text
+        else:
+            ok(f"Using provided transcript text  ({len(transcript_arg)} chars)")
+            return transcript_arg
+
+    return _whisper_transcribe(video_path, max_minutes)
+
+
+# ------------------------------------------------------------------
+# Step 3: Run the LangGraph pipeline
+# ------------------------------------------------------------------
+
+def run_pipeline(video_path: str, transcript: str, top_n: int) -> dict:
+    from agents.long_to_shorts import long_to_shorts_app
+
+    section("STEP 3 — Running LangGraph Long-to-Shorts pipeline")
+    info(f"Source video : {video_path}")
+    info(f"Transcript   : {len(transcript)} chars")
+    info(f"Top-N clips  : {top_n}")
+    print()
+
+    initial_state = {
+        "source_video_path": str(Path(video_path).resolve()),
+        "transcript": transcript,
+        "top_n_clips": top_n,
+        "analyzed_segments": [],
+        "generated_clips": [],
+        "current_step": "initialized",
+        "error": None,
+    }
+
+    t0 = time.time()
+    print("  [3a] AnalyzeVideoNode running …")
+    final_state = long_to_shorts_app.invoke(initial_state)
+    elapsed = time.time() - t0
+
+    ok(f"Pipeline completed in {elapsed:.1f}s")
+    ok(f"Final step   : {final_state.get('current_step', '?')}")
+    if final_state.get("error"):
+        err(f"Pipeline error: {final_state['error']}")
+
+    return final_state
+
+
+# ------------------------------------------------------------------
+# Step 4: Print results summary
+# ------------------------------------------------------------------
+
+def print_results(final_state: dict):
+    section("STEP 4 — Results")
+
+    analyzed = final_state.get("analyzed_segments", [])
+    clips    = final_state.get("generated_clips", [])
+
+    print(f"\n  Segments analysed : {len(analyzed)}")
+    print(f"  Clips extracted   : {len(clips)}")
+
+    if not clips:
+        warn("No clips were generated. Check logs above for errors.")
+        return
+
+    print(f"\n{SEP2}")
+    print(f"  {'ID':<10} {'Score':>5}  {'Range':>18}  {'Path'}")
+    print(SEP2)
+    for clip in clips:
+        start, end = clip["timestamp_range"]
+        rang = f"{start:.1f}s → {end:.1f}s"
+        path = clip.get("path") or "NOT EXTRACTED"
+        print(f"  {clip['clip_id']:<10} {clip['hook_score']:>5.1f}  {rang:>18}  {path}")
+    print(SEP2)
+
+    print()
+    for clip in clips:
+        print(f"  {clip['clip_id']}")
+        title   = clip.get("title")   or "(no title)"
+        summary = clip.get("summary") or "(no summary)"
+        print(f"    Title   : {title}")
+        print(f"    Summary : {summary}")
+        print()
+
+    print(SEP)
+    ok(f"Clips directory: {Path('output/clips').resolve()}")
+    print(SEP)
+
+
+# ------------------------------------------------------------------
+# Entry point
+# ------------------------------------------------------------------
+
+def main():
+    # ------------------------------------------------------------------
+    # Parse args
+    #
+    # YouTube URL mode:
+    #   python run_clipping_workflow.py <YouTube-URL> [TOP_N]
+    #
+    # Local video mode (existing):
+    #   python run_clipping_workflow.py [VIDEO_PATH] [TRANSCRIPT_TEXT_OR_PATH] [TOP_N]
+    # ------------------------------------------------------------------
+    first_arg = sys.argv[1] if len(sys.argv) > 1 else None
+
+    if first_arg and is_youtube_url(first_arg):
+        # YouTube URL mode: second arg (if present) is TOP_N
+        yt_url  = first_arg
+        top_n   = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+
+        print(SEP)
+        print("  LONG-TO-SHORTS CLIP GENERATION WORKFLOW  [YouTube URL mode]")
+        print(f"  URL   : {yt_url}")
+        print(f"  Top-N : {top_n}")
+        print(SEP)
+
+        try:
+            Path("output/clips").mkdir(parents=True, exist_ok=True)
+
+            # Step 0: Download + transcript from YouTube
+            video_path, transcript = get_youtube_inputs(yt_url)
+
+            # Step 1: Probe the downloaded video
+            probe_video(video_path)
+
+            # Step 2: (transcript already fetched from YouTube — skip Whisper)
+            section("STEP 2 — Transcript")
+            ok(f"Using YouTube transcript  ({len(transcript)} chars)")
+
+            # Step 3: Run pipeline
+            final_state = run_pipeline(video_path, transcript, top_n)
+
+            # Step 4: Results
+            print_results(final_state)
+
+        except FileNotFoundError as exc:
+            err(str(exc))
+            sys.exit(1)
+        except (ValueError, RuntimeError) as exc:
+            err(str(exc))
+            sys.exit(1)
+        except KeyboardInterrupt:
+            warn("Interrupted by user.")
+            sys.exit(0)
+        except Exception as exc:
+            import traceback
+            err(f"Unexpected error: {exc}")
+            traceback.print_exc()
+            sys.exit(1)
+
+    else:
+        # Local video mode (original behaviour)
+        video_path     = first_arg or "assets/ailover.mp4"
+        transcript_arg = sys.argv[2] if len(sys.argv) > 2 else None
+        top_n          = int(sys.argv[3]) if len(sys.argv) > 3 else 3
+
+        print(SEP)
+        print("  LONG-TO-SHORTS CLIP GENERATION WORKFLOW  [local video mode]")
+        print(f"  Video : {video_path}")
+        print(f"  Top-N : {top_n}")
+        print(SEP)
+
+        try:
+            Path("output/clips").mkdir(parents=True, exist_ok=True)
+
+            # Step 1: Probe
+            probe_video(video_path)
+
+            # Step 2: Transcript
+            transcript = get_transcript(transcript_arg, video_path)
+
+            # Step 3: Run pipeline
+            final_state = run_pipeline(video_path, transcript, top_n)
+
+            # Step 4: Results
+            print_results(final_state)
+
+        except FileNotFoundError as exc:
+            err(str(exc))
+            sys.exit(1)
+        except ValueError as exc:
+            err(str(exc))
+            sys.exit(1)
+        except KeyboardInterrupt:
+            warn("Interrupted by user.")
+            sys.exit(0)
+        except Exception as exc:
+            import traceback
+            err(f"Unexpected error: {exc}")
+            traceback.print_exc()
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
