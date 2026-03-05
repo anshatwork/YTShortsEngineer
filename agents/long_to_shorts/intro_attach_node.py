@@ -63,36 +63,22 @@ _AUDIO_BITRATE: str = "192k"
 
 
 # ---------------------------------------------------------------------------
-# Safe title for drawtext
+# Text helpers for drawtext
 # ---------------------------------------------------------------------------
 
-def _safe_drawtext(title: str) -> str:
-    r"""
-    Escape a title string so it is safe for use inside ffmpeg's drawtext filter.
-
-    ffmpeg drawtext metachars: ' : \ [ ] , ;
-    We also strip newlines so the text stays on one logical line (word-wrap
-    is handled by drawtext's line_spacing / word_spacing options).
+def _split_lines(title: str, max_chars: int = 18) -> List[str]:
     """
-    # Collapse whitespace / newlines to a single space
-    text = re.sub(r"\s+", " ", title.strip())
-    # Escape characters that ffmpeg drawtext interprets specially
-    for char in ("\\", "'", ":", "[", "]", ",", ";"):
-        text = text.replace(char, "\\" + char)
-    return text
+    Word-wrap *title* into lines of at most *max_chars* characters.
 
+    Returns a plain list of strings — NO escape tokens, NO joined output.
+    Each line is applied as a separate drawtext filter with an explicit y
+    coordinate, which avoids the literal-`\\n` rendering bug that occurs
+    when a multi-line escape token is passed through the Python kwargs API.
 
-# ---------------------------------------------------------------------------
-# Wrap long title text across multiple lines
-# ---------------------------------------------------------------------------
-
-def _wrap_title(title: str, max_chars: int = 22) -> str:
+    max_chars=18 is conservative for a 1080 px frame at fontsize 52 so
+    text never overflows the safe area (~80 px margin on each side).
     """
-    Break title into lines of at most *max_chars* characters so it fits
-    the 9:16 frame without overflow.  Returns a drawtext-safe string with
-    `\n` (literal backslash-n) as the newline token expected by drawtext.
-    """
-    words = title.split()
+    words = re.sub(r"\s+", " ", title.strip()).split()
     lines: List[str] = []
     current = ""
     for word in words:
@@ -103,9 +89,26 @@ def _wrap_title(title: str, max_chars: int = 22) -> str:
             current = (current + " " + word).strip() if current else word
     if current:
         lines.append(current)
+    return lines or [""]
 
-    # Join with drawtext's newline escape and apply character-level escaping
-    return r"\n".join(_safe_drawtext(line) for line in lines)
+
+def _escape_drawtext(text: str) -> str:
+    """
+    Escape a single text line for the ffmpeg drawtext `text=` option.
+
+    ffmpeg drawtext interprets these characters specially even when the
+    value is passed via the Python kwargs API (which serialises to a
+    command-line `-vf` string under the hood):
+        \\  →  \\\\   (must be first so we don't double-escape)
+        '   →  \\'    (single quotes delimit the text= value on cmdline)
+        :   →  \\:    (colon separates filter options)
+        %   →  %%     (percent introduces strftime / pts format codes)
+    """
+    text = text.replace("\\", "\\\\")
+    text = text.replace("'",  "\\'")
+    text = text.replace(":",  "\\:")
+    text = text.replace("%",  "%%")
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -117,29 +120,26 @@ def _render_intro(title: str, output_path: str) -> None:
     Render an intro title-card clip to *output_path* (mp4).
 
     Layout:
-        - Full 9:16 frame ({_WIDTH}x{_HEIGHT}) filled with _INTRO_BG_COLOR
-        - Centred title text in _INTRO_FONT_COLOR / _INTRO_FONT_SIZE
+        - Full 9:16 frame (_WIDTH × _HEIGHT) filled with _INTRO_BG_COLOR
+        - Title word-wrapped into lines of ≤18 chars, each drawn as a
+          separate drawtext filter with an explicit pixel Y position so
+          that multi-line text is rendered correctly (no literal '\\n')
+        - The entire text block is vertically centred on the frame
         - Duration: _INTRO_DURATION seconds at _FPS fps
         - Silent audio track (so the concat step always has audio)
     """
-    wrapped_text = _wrap_title(title, max_chars=22)
-    line_height = _INTRO_FONT_SIZE + 8   # approximate px between lines
+    lines = _split_lines(title, max_chars=18)
 
-    # drawtext filter – center the (possibly multi-line) title
-    drawtext_filter = (
-        f"drawtext=text='{wrapped_text}'"
-        f":fontsize={_INTRO_FONT_SIZE}"
-        f":fontcolor={_INTRO_FONT_COLOR}"
-        f":x=(w-text_w)/2"
-        f":y=(h-text_h)/2"
-        f":line_spacing={line_height}"
-    )
+    # Vertical layout: space lines by (font_size + gap) and centre the block
+    line_gap  = 16                                    # px between baselines beyond font height
+    line_step = _INTRO_FONT_SIZE + line_gap           # total step per line
+    block_h   = len(lines) * line_step - line_gap     # total block height
+    start_y   = max(60, (_HEIGHT - block_h) // 2)    # top of first line (min 60 px from top)
 
-    # Video: lavfi color source forced to yuv420p + drawtext
-    # The `format=yuv420p` filter ensures the lavfi color source (which defaults
-    # to yuv444p) is converted before drawtext so all downstream filters and the
-    # final encode stay in yuv420p — the only pixel format accepted by Windows
-    # Media Player, YouTube, and virtually every consumer device.
+    # Video: lavfi color source forced to yuv420p immediately so that all
+    # downstream drawtext filters and the final encode stay in yuv420p.
+    # (The lavfi `color` source defaults to yuv444p which Windows Media
+    # Player and YouTube do not accept.)
     video = (
         ffmpeg
         .input(
@@ -147,16 +147,20 @@ def _render_intro(title: str, output_path: str) -> None:
             f="lavfi",
         )
         .video
-        .filter("format", "yuv420p")   # pin pixel format before drawtext
-        .filter("drawtext", **{
-            "text":         wrapped_text,
-            "fontsize":     str(_INTRO_FONT_SIZE),
-            "fontcolor":    _INTRO_FONT_COLOR,
-            "x":            "(w-text_w)/2",
-            "y":            "(h-text_h)/2",
-            "line_spacing": str(line_height),
-        })
+        .filter("format", "yuv420p")
     )
+
+    # One drawtext filter per line — no \n escape tokens, no overflow risk
+    for i, line in enumerate(lines):
+        y_px = start_y + i * line_step
+        video = video.filter(
+            "drawtext",
+            text=_escape_drawtext(line),
+            fontsize=str(_INTRO_FONT_SIZE),
+            fontcolor=_INTRO_FONT_COLOR,
+            x="(w-text_w)/2",        # horizontally centred per line
+            y=str(y_px),
+        )
 
     # Silent audio at 44100 Hz stereo (same spec used in main clips)
     audio = ffmpeg.input(

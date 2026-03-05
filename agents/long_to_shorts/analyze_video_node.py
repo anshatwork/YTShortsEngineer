@@ -31,29 +31,44 @@ _TARGET_SEGMENT_SECONDS: float = 55.0
 # Overlap between consecutive windows (seconds) to avoid cutting sentences.
 _OVERLAP_SECONDS: float = 10.0
 # Minimum segment duration (seconds). Clips shorter than this are unusable for Shorts.
-MIN_SEGMENT_SECONDS: float = 30.0
+MIN_SEGMENT_SECONDS: float = 45.0
 
 _CHUNK_SIZE: int = int(_TARGET_SEGMENT_SECONDS * _CHARS_PER_SECOND)
 _OVERLAP_SIZE: int = int(_OVERLAP_SECONDS * _CHARS_PER_SECOND)
 
 _ANALYSIS_PROMPT = """\
-You are a viral content strategist who specialises in YouTube Shorts.
+You are a senior viral content strategist specialising exclusively in YouTube Shorts.
+Your job is to find the single most scroll-stopping segment in a transcript excerpt.
 
-Analyse the transcript excerpt below and identify the single most engaging \
-segment within it. The segment MUST be between 30 and 60 seconds long \
-(end_time minus start_time >= 30 and <= 60). Do not pick a single line or \
-a few seconds — we need a full 30–60 second clip for YouTube Shorts.
+━━━ HOOK SCORE RUBRIC (1–10) ━━━
+10 – Jaw-dropping opening line + clear story arc + strong emotional payoff
+ 9 – Surprising fact or reveal that demands a share
+ 8 – Relatable emotional story with a satisfying resolution
+ 7 – Controversial take or bold opinion that sparks debate
+ 6 – Genuinely funny moment or unexpected humour
+ 5 – Useful how-to insight that solves a real problem
+ 4 – Moderately interesting but lacks a hook or payoff
+ 3 – Generic information with no emotional trigger
+ 2 – Rambling or off-topic content
+ 1 – Purely administrative / completely forgettable
 
-Score its hook potential from 1 to 10 where:
-  10 = jaw-dropping / must-share  
-   1 = dull / completely forgettable
+━━━ HOOK TYPE CLASSIFICATION ━━━
+Choose exactly ONE from:
+  curiosity_gap | surprising_fact | emotional_story | controversy | humor | how_to
 
-Return ONLY a valid JSON object — no markdown fences, no extra text — \
-with exactly these keys:
-  "start_time"  : estimated start time in seconds (float, relative to excerpt start; 0 = start of this excerpt)
-  "end_time"    : estimated end time in seconds (float, relative to excerpt start; must be start_time + 30 to 60 seconds)
-  "hook_score"  : float between 1 and 10
-  "reason"      : one-sentence explanation
+━━━ DURATION RULES ━━━
+The segment MUST be 45–75 seconds long (end_time − start_time ≥ 45 and ≤ 75).
+Do NOT pick a single line or a moment — we need a FULL self-contained story arc.
+If the excerpt is shorter than 45 seconds, use the whole excerpt.
+
+━━━ OUTPUT FORMAT ━━━
+Return ONLY a valid JSON object — no markdown fences, no commentary — \
+with EXACTLY these keys:
+  "start_time" : float — start offset in seconds relative to this excerpt (0 = excerpt start)
+  "end_time"   : float — end offset in seconds relative to this excerpt (start_time + 45 to 75)
+  "hook_score" : float — your score from 1 to 10 (one decimal place)
+  "hook_type"  : string — one of the six types above
+  "reason"     : string — one sentence explaining WHY this segment scores this high
 
 Transcript excerpt (starts at {offset_seconds:.1f}s into the video):
 \"\"\"

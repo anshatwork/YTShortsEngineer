@@ -70,14 +70,22 @@ class ClipObject(TypedDict):
     hook_score: float                   # Hook quality 1–10 (from LLM analysis)
     title: Optional[str]               # Viral title, max 50 chars
     summary: Optional[str]             # 1-sentence YouTube Shorts description
+    hook_text: Optional[str]           # Short overlay text ≤55 chars for TopTextNode
+    hashtags: Optional[List[str]]      # 5 SEO hashtags (no # prefix)
 
 
 class LongToShortsState(TypedDict):
     """Global state for the Long-to-Shorts conversion sub-graph."""
     # --- Inputs ---
+    
+    
     source_video_path: str              # Local path to the long-form video file
     transcript: str                     # Full text transcript of the video
     top_n_clips: int                    # Max clips to extract (default: 5)
+
+    # --- Feature flags (can also be overridden by env vars) ---
+    add_top_text: bool                  # Overlay hook text at top of clip (TopTextNode)
+    add_subtitles: bool                 # Burn subtitles into clip (SubtitlesNode)
 
     # --- Intermediate / Outputs ---
     analyzed_segments: List[ClipObject] # Hook-scored segments from AnalyzeVideoNode

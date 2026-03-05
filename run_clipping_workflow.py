@@ -6,16 +6,27 @@ or a YouTube URL.
 
 Usage
 -----
-    # Local video (existing behaviour)
+    # Local video
     python run_clipping_workflow.py [VIDEO_PATH] [TRANSCRIPT_TEXT_OR_PATH] [TOP_N]
+        [--subtitles] [--top-text] [--no-intro]
 
-    # YouTube URL — downloads the video and fetches the transcript automatically
+    # YouTube URL
     python run_clipping_workflow.py <YouTube-URL> [TOP_N]
+        [--subtitles] [--top-text] [--no-intro]
+
+Optional feature flags
+----------------------
+    --subtitles    Burn auto-generated subtitles onto each clip (uses Whisper)
+    --top-text     Overlay the LLM hook text at the top of each clip
+    --no-intro     Skip the title-card intro prepended by IntroAttachNode
 
 Defaults
 --------
     VIDEO_PATH  = assets/ailover.mp4
     TOP_N       = 3
+    intro       = ON   (disable with --no-intro)
+    subtitles   = OFF  (enable with --subtitles)
+    top-text    = OFF  (enable with --top-text)
 
 How it works (YouTube URL path)
 --------------------------------
@@ -25,8 +36,10 @@ How it works (YouTube URL path)
 3. Fetches the transcript from YouTube captions via youtube-transcript-api
    (no Whisper, no OAuth required).
 4. Runs the full LangGraph Long-to-Shorts pipeline:
-      AnalyzeVideoNode  → ClippingLogicNode  → ContentGenNode → IntroAttachNode
-5. Prints a summary of every clip with path, hook score, title, and summary.
+      AnalyzeVideoNode → ClippingLogicNode → ContentGenNode
+        → TopTextNode → SubtitlesNode → IntroAttachNode
+5. Prints a summary of every clip with path, hook score, title, summary,
+   hook overlay text, and hashtags.
 6. All clips are written to  output/clips/
 
 How it works (local video path)
@@ -38,10 +51,11 @@ How it works (local video path)
 3–6. Same as above.
 
 Dependencies already in requirements.txt:
-    ffmpeg-python, openai-whisper (for auto-transcription fallback),
+    ffmpeg-python, openai-whisper (for auto-transcription and subtitles),
     yt-dlp, youtube-transcript-api
 """
 
+import argparse
 import os
 import re
 import sys
@@ -148,7 +162,19 @@ def get_youtube_inputs(url: str) -> tuple[str, str]:
         warn("Falling back to Whisper auto-transcription …")
         transcript = _whisper_transcribe(video_path)
 
+    # Save transcript to disk for debugging / inspection
+    _save_transcript(transcript, video_id)
+
     return video_path, transcript
+
+
+def _save_transcript(transcript: str, name: str) -> None:
+    """Write *transcript* to output/transcripts/<name>.txt for inspection."""
+    transcripts_dir = Path("output") / "transcripts"
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
+    out_path = transcripts_dir / f"{name}.txt"
+    out_path.write_text(transcript, encoding="utf-8")
+    ok(f"Transcript saved → {out_path}")
 
 
 # ------------------------------------------------------------------
@@ -269,30 +295,49 @@ def get_transcript(transcript_arg: str | None, video_path: str, max_minutes: int
             ok(f"Using provided transcript text  ({len(transcript_arg)} chars)")
             return transcript_arg
 
-    return _whisper_transcribe(video_path, max_minutes)
+    text = _whisper_transcribe(video_path, max_minutes)
+    _save_transcript(text, Path(video_path).stem)
+    return text
 
 
 # ------------------------------------------------------------------
 # Step 3: Run the LangGraph pipeline
 # ------------------------------------------------------------------
 
-def run_pipeline(video_path: str, transcript: str, top_n: int) -> dict:
+def run_pipeline(
+    video_path: str,
+    transcript: str,
+    top_n: int,
+    add_subtitles: bool = False,
+    add_top_text: bool = False,
+    add_intro: bool = True,
+) -> dict:
     from agents.long_to_shorts import long_to_shorts_app
 
     section("STEP 3 — Running LangGraph Long-to-Shorts pipeline")
     info(f"Source video : {video_path}")
     info(f"Transcript   : {len(transcript)} chars")
     info(f"Top-N clips  : {top_n}")
+    info(f"Options      : intro={'ON' if add_intro else 'OFF'}  "
+         f"top-text={'ON' if add_top_text else 'OFF'}  "
+         f"subtitles={'ON' if add_subtitles else 'OFF'}")
     print()
+
+    # Apply feature flags to environment so each node can read them
+    os.environ["ADD_INTRO"]      = "1" if add_intro      else "0"
+    os.environ["ADD_TOP_TEXT"]   = "1" if add_top_text   else "0"
+    os.environ["ADD_SUBTITLES"]  = "1" if add_subtitles  else "0"
 
     initial_state = {
         "source_video_path": str(Path(video_path).resolve()),
-        "transcript": transcript,
-        "top_n_clips": top_n,
+        "transcript":        transcript,
+        "top_n_clips":       top_n,
+        "add_top_text":      add_top_text,
+        "add_subtitles":     add_subtitles,
         "analyzed_segments": [],
-        "generated_clips": [],
-        "current_step": "initialized",
-        "error": None,
+        "generated_clips":   [],
+        "current_step":      "initialized",
+        "error":             None,
     }
 
     t0 = time.time()
@@ -338,10 +383,15 @@ def print_results(final_state: dict):
     print()
     for clip in clips:
         print(f"  {clip['clip_id']}")
-        title   = clip.get("title")   or "(no title)"
-        summary = clip.get("summary") or "(no summary)"
-        print(f"    Title   : {title}")
-        print(f"    Summary : {summary}")
+        title     = clip.get("title")     or "(no title)"
+        summary   = clip.get("summary")   or "(no summary)"
+        hook_text = clip.get("hook_text") or "(none)"
+        hashtags  = clip.get("hashtags")  or []
+        print(f"    Title    : {title}")
+        print(f"    Summary  : {summary}")
+        print(f"    Hook     : {hook_text}")
+        if hashtags:
+            print(f"    Hashtags : {' '.join('#' + t for t in hashtags)}")
         print()
 
     print(SEP)
@@ -353,57 +403,118 @@ def print_results(final_state: dict):
 # Entry point
 # ------------------------------------------------------------------
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="run_clipping_workflow",
+        description=(
+            "Long-to-Shorts clip generation from a local video or a YouTube URL.\n\n"
+            "YouTube mode:  run_clipping_workflow.py <URL> [TOP_N] [flags]\n"
+            "Local mode:    run_clipping_workflow.py [VIDEO] [TRANSCRIPT] [TOP_N] [flags]"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # Positional arguments (all optional for backward compatibility)
+    parser.add_argument(
+        "source",
+        nargs="?",
+        default=None,
+        help="YouTube URL or local video path (default: assets/ailover.mp4)",
+    )
+    parser.add_argument(
+        "second",
+        nargs="?",
+        default=None,
+        help=(
+            "TOP_N (YouTube mode) or transcript text/path (local mode). "
+            "Defaults: TOP_N=3, no transcript (auto-transcribed with Whisper)."
+        ),
+    )
+    parser.add_argument(
+        "third",
+        nargs="?",
+        default=None,
+        help="TOP_N for local mode (default: 3)",
+    )
+
+    # Feature flags
+    parser.add_argument(
+        "--subtitles",
+        action="store_true",
+        default=False,
+        help="Burn auto-generated subtitles onto each clip (requires openai-whisper)",
+    )
+    parser.add_argument(
+        "--top-text",
+        action="store_true",
+        default=False,
+        dest="top_text",
+        help="Overlay the LLM-generated hook text at the top of each clip",
+    )
+    parser.add_argument(
+        "--no-intro",
+        action="store_true",
+        default=False,
+        dest="no_intro",
+        help="Skip the title-card intro that IntroAttachNode prepends",
+    )
+
+    return parser
+
+
 def main():
-    # ------------------------------------------------------------------
-    # Parse args
-    #
-    # YouTube URL mode:
-    #   python run_clipping_workflow.py <YouTube-URL> [TOP_N]
-    #
-    # Local video mode (existing):
-    #   python run_clipping_workflow.py [VIDEO_PATH] [TRANSCRIPT_TEXT_OR_PATH] [TOP_N]
-    # ------------------------------------------------------------------
-    first_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = _build_arg_parser()
+    args   = parser.parse_args()
+
+    add_intro     = not args.no_intro
+    add_subtitles = args.subtitles
+    add_top_text  = args.top_text
+
+    first_arg = args.source
 
     if first_arg and is_youtube_url(first_arg):
-        # YouTube URL mode: second arg (if present) is TOP_N
-        yt_url  = first_arg
-        top_n   = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+        # ------------------------------------------------------------------
+        # YouTube URL mode
+        # second positional = TOP_N (if present)
+        # ------------------------------------------------------------------
+        yt_url = first_arg
+        try:
+            top_n = int(args.second) if args.second is not None else 3
+        except ValueError:
+            top_n = 3
 
         print(SEP)
         print("  LONG-TO-SHORTS CLIP GENERATION WORKFLOW  [YouTube URL mode]")
-        print(f"  URL   : {yt_url}")
-        print(f"  Top-N : {top_n}")
+        print(f"  URL       : {yt_url}")
+        print(f"  Top-N     : {top_n}")
+        print(f"  Intro     : {'ON' if add_intro else 'OFF'}")
+        print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
+        print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}")
         print(SEP)
 
         try:
             Path("output/clips").mkdir(parents=True, exist_ok=True)
 
-            # Step 0: Download + transcript from YouTube
             video_path, transcript = get_youtube_inputs(yt_url)
-
-            # Step 1: Probe the downloaded video
             probe_video(video_path)
 
-            # Step 2: (transcript already fetched from YouTube — skip Whisper)
             section("STEP 2 — Transcript")
             ok(f"Using YouTube transcript  ({len(transcript)} chars)")
 
-            # Step 3: Run pipeline
-            final_state = run_pipeline(video_path, transcript, top_n)
-
-            # Step 4: Results
+            final_state = run_pipeline(
+                video_path, transcript, top_n,
+                add_subtitles=add_subtitles,
+                add_top_text=add_top_text,
+                add_intro=add_intro,
+            )
             print_results(final_state)
 
         except FileNotFoundError as exc:
-            err(str(exc))
-            sys.exit(1)
+            err(str(exc)); sys.exit(1)
         except (ValueError, RuntimeError) as exc:
-            err(str(exc))
-            sys.exit(1)
+            err(str(exc)); sys.exit(1)
         except KeyboardInterrupt:
-            warn("Interrupted by user.")
-            sys.exit(0)
+            warn("Interrupted by user."); sys.exit(0)
         except Exception as exc:
             import traceback
             err(f"Unexpected error: {exc}")
@@ -411,41 +522,46 @@ def main():
             sys.exit(1)
 
     else:
-        # Local video mode (original behaviour)
+        # ------------------------------------------------------------------
+        # Local video mode
+        # positional layout: source=VIDEO, second=TRANSCRIPT, third=TOP_N
+        # ------------------------------------------------------------------
         video_path     = first_arg or "assets/ailover.mp4"
-        transcript_arg = sys.argv[2] if len(sys.argv) > 2 else None
-        top_n          = int(sys.argv[3]) if len(sys.argv) > 3 else 3
+        transcript_arg = args.second if args.second is not None else None
+        try:
+            top_n = int(args.third) if args.third is not None else 3
+        except ValueError:
+            top_n = 3
 
         print(SEP)
         print("  LONG-TO-SHORTS CLIP GENERATION WORKFLOW  [local video mode]")
-        print(f"  Video : {video_path}")
-        print(f"  Top-N : {top_n}")
+        print(f"  Video     : {video_path}")
+        print(f"  Top-N     : {top_n}")
+        print(f"  Intro     : {'ON' if add_intro else 'OFF'}")
+        print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
+        print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}")
         print(SEP)
 
         try:
             Path("output/clips").mkdir(parents=True, exist_ok=True)
 
-            # Step 1: Probe
             probe_video(video_path)
-
-            # Step 2: Transcript
             transcript = get_transcript(transcript_arg, video_path)
 
-            # Step 3: Run pipeline
-            final_state = run_pipeline(video_path, transcript, top_n)
-
-            # Step 4: Results
+            final_state = run_pipeline(
+                video_path, transcript, top_n,
+                add_subtitles=add_subtitles,
+                add_top_text=add_top_text,
+                add_intro=add_intro,
+            )
             print_results(final_state)
 
         except FileNotFoundError as exc:
-            err(str(exc))
-            sys.exit(1)
+            err(str(exc)); sys.exit(1)
         except ValueError as exc:
-            err(str(exc))
-            sys.exit(1)
+            err(str(exc)); sys.exit(1)
         except KeyboardInterrupt:
-            warn("Interrupted by user.")
-            sys.exit(0)
+            warn("Interrupted by user."); sys.exit(0)
         except Exception as exc:
             import traceback
             err(f"Unexpected error: {exc}")

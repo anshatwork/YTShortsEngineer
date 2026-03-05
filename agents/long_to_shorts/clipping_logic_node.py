@@ -48,9 +48,9 @@ _OUT_W: int = 1080
 _OUT_H: int = 1920
 _PAD_COLOR: str = "black"
 
-# Minimum clip duration (seconds). Segments shorter than this are skipped
-# so we don't produce 5s/1s clips when the LLM returns very short ranges.
-MIN_CLIP_DURATION_SECONDS: float = 30.0
+# Minimum clip duration (seconds). Matches MIN_SEGMENT_SECONDS in analyze_video_node.
+# Segments below this are logged as a warning but still processed.
+MIN_CLIP_DURATION_SECONDS: float = 35.0
 
 
 # ---------------------------------------------------------------------------

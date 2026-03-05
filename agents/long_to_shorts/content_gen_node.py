@@ -1,14 +1,16 @@
 """
 agents/long_to_shorts/content_gen_node.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-ContentGenNode – viral title and description generation (Reduce phase).
+ContentGenNode – viral title, description, hook overlay, and hashtag generation
+(Reduce phase).
 
 For each successfully extracted clip in generated_clips:
   1.  Extracts the relevant transcript excerpt based on timestamp_range.
-  2.  Prompts the LLM for a viral Title (≤50 chars) and a
-      1-sentence YouTube Shorts description.
-  3.  Enforces the 50-char title limit via hard truncation as a safety net.
-  4.  Returns the updated generated_clips list with title and summary filled in.
+  2.  Prompts the LLM for a viral Title (≤50 chars), a 1-sentence description,
+      a short hook overlay text (≤35 chars), and 5 SEO hashtags.
+  3.  Enforces length limits via hard truncation as a safety net.
+  4.  Returns the updated generated_clips list with title, summary, hook_text,
+      and hashtags filled in.
 """
 
 import logging
@@ -24,25 +26,41 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_TITLE_MAX_CHARS: int = 50
+_TITLE_MAX_CHARS: int    = 50
+_HOOK_TEXT_MAX_CHARS: int = 55
 
 _CONTENT_PROMPT = """\
-You are a viral YouTube Shorts copywriter.
+You are an expert YouTube Shorts copywriter who creates content that stops the scroll.
 
-Write a compelling title and a one-sentence description for a short video clip.
+Analyse the transcript excerpt and produce ALL FOUR of the following:
 
-Rules:
-- Title: maximum {max_chars} characters, punchy, no clickbait emojis
-- Summary: exactly ONE sentence, optimised for YouTube Shorts descriptions
+1. TITLE  — Maximum {max_title_chars} characters. Punchy, curiosity-driven, no filler.
+   Use power openers like: "Why I...", "The truth about...", "How to...", "You're doing X wrong",
+   "Nobody tells you this about...", "This changed everything".
+   NO emojis. NO ALL-CAPS shouting.
+
+2. SUMMARY — Exactly ONE sentence optimised for a YouTube Shorts description.
+   Must tease the value without giving everything away. End with a soft CTA if natural.
+
+3. HOOK — Maximum {max_hook_chars} characters. A punchy overlay line that appears ON SCREEN
+   at the top of the video. Think of it as the first thing a viewer reads before they decide
+   to watch. Different from the title — more like a bold statement or question.
+   Examples: "Wait until the end", "This blew my mind", "Most people get this wrong",
+   "The truth they don't want you to know".
+
+4. TAGS — Exactly 5 hashtag keywords (no # symbol, lowercase, no spaces in each tag).
+   Choose tags that balance search volume and specificity for this clip's topic.
 
 Transcript excerpt:
 \"\"\"
 {transcript_excerpt}
 \"\"\"
 
-Respond with ONLY these two lines (no extra text or labels):
+Respond with EXACTLY these four lines and nothing else:
 TITLE: <your title here>
 SUMMARY: <your one-sentence description here>
+HOOK: <your overlay hook text here>
+TAGS: tag1, tag2, tag3, tag4, tag5
 """
 
 
@@ -67,37 +85,71 @@ def _get_excerpt(
 # Helper: parse LLM title/summary response
 # ---------------------------------------------------------------------------
 
-def _parse_content_response(raw: str) -> Dict[str, str]:
+def _parse_content_response(raw: str) -> Dict[str, Any]:
     """
-    Extract TITLE and SUMMARY from the LLM response.
-    Returns {"title": str, "summary": str}.
-    Falls back to truncated raw text if parsing fails.
+    Extract TITLE, SUMMARY, HOOK, and TAGS from the LLM response.
+
+    Returns:
+        {
+            "title":     str,
+            "summary":   str,
+            "hook_text": str,
+            "hashtags":  List[str],
+        }
+
+    Falls back gracefully if any field is missing.
     """
-    title = ""
-    summary = ""
+    title     = ""
+    summary   = ""
+    hook_text = ""
+    tags_raw  = ""
 
     for line in raw.splitlines():
-        line = line.strip()
-        if line.upper().startswith("TITLE:"):
-            title = line[6:].strip()
-        elif line.upper().startswith("SUMMARY:"):
-            summary = line[8:].strip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        # More flexible parsing - handle variations in formatting
+        if re.match(r'^title\s*:\s*', stripped, re.IGNORECASE):
+            title = re.sub(r'^title\s*:\s*', '', stripped, flags=re.IGNORECASE).strip()
+        elif re.match(r'^summary\s*:\s*', stripped, re.IGNORECASE):
+            summary = re.sub(r'^summary\s*:\s*', '', stripped, flags=re.IGNORECASE).strip()
+        elif re.match(r'^hook\s*:\s*', stripped, re.IGNORECASE):
+            hook_text = re.sub(r'^hook\s*:\s*', '', stripped, flags=re.IGNORECASE).strip()
+        elif re.match(r'^tags?\s*:\s*', stripped, re.IGNORECASE):
+            tags_raw = re.sub(r'^tags?\s*:\s*', '', stripped, flags=re.IGNORECASE).strip()
 
-    # Hard fallback: if parsing failed, use first 50 chars as title
+    # Hard fallbacks
     if not title:
         title = raw.strip()[:_TITLE_MAX_CHARS]
     if not summary:
-        # Use the whole raw text as summary (it will be a single LLM sentence)
         summary = raw.strip()
 
-    # Enforce title length limit
+    # Enforce length limits
     if len(title) > _TITLE_MAX_CHARS:
         title = title[:_TITLE_MAX_CHARS].rstrip()
+    if len(hook_text) > _HOOK_TEXT_MAX_CHARS:
+        hook_text = hook_text[:_HOOK_TEXT_MAX_CHARS].rstrip()
 
-    # Strip trailing whitespace from summary
-    summary = re.sub(r"\s+", " ", summary).strip()
+    # Normalise whitespace
+    summary   = re.sub(r"\s+", " ", summary).strip()
+    hook_text = re.sub(r"\s+", " ", hook_text).strip()
 
-    return {"title": title, "summary": summary}
+    # Parse hashtags: comma-separated, strip leading # if LLM added them
+    hashtags: List[str] = []
+    if tags_raw:
+        for tag in tags_raw.split(","):
+            tag = tag.strip().lstrip("#").lower().replace(" ", "")
+            if tag:
+                hashtags.append(tag)
+    hashtags = hashtags[:5]  # cap at 5
+
+    return {
+        "title":     title,
+        "summary":   summary,
+        "hook_text": hook_text,
+        "hashtags":  hashtags,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -106,14 +158,15 @@ def _parse_content_response(raw: str) -> Dict[str, str]:
 
 def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
     """
-    LangGraph node: generate viral title + 1-sentence summary for each clip.
+    LangGraph node: generate viral title, summary, hook overlay text, and
+    hashtags for each clip.
 
     Input state keys used:
         generated_clips – List[ClipObject] from ClippingLogicNode
         transcript      – full transcript for excerpt extraction
 
     Output state keys:
-        generated_clips – same list with title and summary filled in
+        generated_clips – same list with title, summary, hook_text, hashtags filled in
         current_step
     """
     clips: List[ClipObject] = state.get("generated_clips", [])
@@ -126,9 +179,8 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
             "current_step": "content_gen_skipped",
         }
 
-    logger.info(f"ContentGenNode: generating titles + summaries for {len(clips)} clip(s).")
+    logger.info(f"ContentGenNode: generating metadata for {len(clips)} clip(s).")
 
-    # Try to initialize LLM (Ollama); fall back to placeholder text if unavailable
     llm_available = True
     llm = None
     try:
@@ -148,7 +200,8 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
         if llm_available and llm is not None:
             excerpt = _get_excerpt(transcript, start, end)
             prompt_text = _CONTENT_PROMPT.format(
-                max_chars=_TITLE_MAX_CHARS,
+                max_title_chars=_TITLE_MAX_CHARS,
+                max_hook_chars=_HOOK_TEXT_MAX_CHARS,
                 transcript_excerpt=excerpt,
             )
             try:
@@ -156,24 +209,27 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
                 response = llm.invoke([HumanMessage(content=prompt_text)])
                 raw = response.content if hasattr(response, "content") else str(response)
                 content = _parse_content_response(raw)
-                updated["title"] = content["title"]
-                updated["summary"] = content["summary"]
+                updated["title"]     = content["title"]
+                updated["summary"]   = content["summary"]
+                updated["hook_text"] = content["hook_text"]
+                updated["hashtags"]  = content["hashtags"]
                 logger.info(
                     f"  ✓ {clip_id}: title='{updated['title']}' "
-                    f"({len(updated['title'])} chars)"
+                    f"({len(updated['title'])} chars)  "
+                    f"hook='{updated['hook_text']}'  "
+                    f"tags={updated['hashtags']}"
                 )
             except Exception as exc:
                 logger.error(f"  ✗ {clip_id}: LLM call failed – {exc}. Using placeholder.")
-                updated["title"] = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
-                updated["summary"] = (
-                    f"Highlight segment extracted from {start:.1f}s to {end:.1f}s."
-                )
+                updated["title"]     = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
+                updated["summary"]   = f"Highlight segment extracted from {start:.1f}s to {end:.1f}s."
+                updated["hook_text"] = None
+                updated["hashtags"]  = []
         else:
-            # Placeholder metadata when LLM is not available
-            updated["title"] = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
-            updated["summary"] = (
-                f"Highlight segment extracted from {start:.1f}s to {end:.1f}s."
-            )
+            updated["title"]     = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
+            updated["summary"]   = f"Highlight segment extracted from {start:.1f}s to {end:.1f}s."
+            updated["hook_text"] = None
+            updated["hashtags"]  = []
 
         enriched_clips.append(updated)
 
