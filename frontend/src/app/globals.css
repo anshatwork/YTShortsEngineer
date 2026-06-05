@@ -1,0 +1,207 @@
+@import "tailwindcss";
+
+@theme {
+  /* Paper & ink — warm cream, warm dark, never pure white/black */
+  --color-paper: #FBFAF5;
+  --color-paper-2: #F4F1E6;
+  --color-paper-3: #ECE7D6;
+  --color-ink: #14110B;
+  --color-ink-muted: #6B6657;
+  --color-ink-soft: #948E7B;
+
+  /* Rules — hairline strokes; -ink for emphasis, -soft for everyday */
+  --color-rule: #14110B;
+  --color-rule-soft: #D9D4C2;
+
+  /* Mark — single accent reserved for high-emphasis moments (failed state).
+     A burnt umber that reads as ink, not "brand color". */
+  --color-mark: #6E2A1A;
+
+  /* Type stack — Fraunces variable serif everywhere, Mrs Saint Delafield
+     script for the masthead/signature, Geist Mono for code & IDs. */
+  --font-sans: var(--font-fraunces), "Iowan Old Style", "Cormorant Garamond", Georgia, serif;
+  --font-display: var(--font-fraunces), "Iowan Old Style", Georgia, serif;
+  --font-script: var(--font-script), "Snell Roundhand", "Edwardian Script ITC", "Apple Chancery", cursive;
+  --font-mono: var(--font-mono-face), ui-monospace, "SF Mono", "Menlo", monospace;
+}
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-variant-numeric: oldstyle-nums proportional-nums;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-optical-sizing: auto;
+    font-feature-settings: "onum", "ss01";
+
+    /* Paper grain — barely-there warm vignette so the canvas doesn't read
+       as a flat screen rectangle. */
+    background-image:
+      radial-gradient(1200px 800px at 85% -15%, rgba(20, 17, 11, 0.035), transparent 60%),
+      radial-gradient(900px 600px at -10% 115%, rgba(20, 17, 11, 0.03), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  /* Native form elements pick up paper styling */
+  input, textarea, select, button {
+    font-family: inherit;
+    color: inherit;
+  }
+
+  /* Sliders — recolor the accent so range inputs match the palette */
+  input[type="range"] {
+    accent-color: var(--color-ink);
+  }
+
+  ::selection {
+    background-color: var(--color-ink);
+    color: var(--color-paper);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-rule-soft);
+    border-radius: 0;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-muted);
+  }
+
+  /* Default link tone */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+@layer utilities {
+  /* Hairline rules — the spine of the layout */
+  .rule {
+    border: 0;
+    border-top: 1px solid var(--color-rule-soft);
+    height: 0;
+    width: 100%;
+  }
+  .rule-ink {
+    border-top: 1px solid var(--color-ink);
+  }
+  .rule-double {
+    border: 0;
+    border-top: 1px solid var(--color-ink);
+    border-bottom: 1px solid var(--color-ink);
+    padding: 1px 0;
+    height: 3px;
+  }
+
+  /* Editorial kicker — set above every section like a magazine subhead */
+  .kicker {
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    line-height: 1;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    font-weight: 500;
+    font-variant-numeric: lining-nums tabular-nums;
+    color: var(--color-ink-muted);
+  }
+
+  /* Small caps — for inline metadata accents */
+  .smallcaps {
+    font-variant-caps: all-small-caps;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+
+  /* Numeric variants */
+  .num-oldstyle { font-variant-numeric: oldstyle-nums proportional-nums; }
+  .num-tabular  { font-variant-numeric: lining-nums tabular-nums; }
+  .num-lining   { font-variant-numeric: lining-nums proportional-nums; }
+
+  /* Script — the cursive signature */
+  .script {
+    font-family: var(--font-script);
+    font-weight: 400;
+    font-style: normal;
+  }
+
+  /* Italic display — for emphasis in headlines */
+  .display-italic {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+  }
+
+  /* Fraunces variable axis controls — SOFT softens the corners
+     (turns down the slab feel), WONK enables the alternate g/a forms */
+  .fraunces-soft     { font-variation-settings: "SOFT" 50, "WONK" 0; }
+  .fraunces-wonk     { font-variation-settings: "SOFT" 30, "WONK" 1; }
+  .fraunces-crisp    { font-variation-settings: "SOFT" 0,  "WONK" 0; }
+
+  /* Page-load entrance: hairline rule scales from 0 width */
+  @keyframes ruleIn {
+    from { transform: scaleX(0); opacity: 0; }
+    to   { transform: scaleX(1); opacity: 1; }
+  }
+  .rule-in {
+    transform-origin: left;
+    animation: ruleIn 700ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  /* A subtle "ink dot" indicator used for status lights — replaces colored
+     badges with a small filled circle that pulses when active */
+  @keyframes inkPulse {
+    0%, 100% { opacity: 0.35; transform: scale(1); }
+    50%      { opacity: 1;    transform: scale(1.18); }
+  }
+  .ink-pulse { animation: inkPulse 1.8s ease-in-out infinite; }
+
+  /* Newsprint-style underline that doesn't sit on the baseline */
+  .ink-underline {
+    background-image: linear-gradient(to bottom, transparent calc(100% - 1px), var(--color-ink) calc(100% - 1px));
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+  }
+  .ink-underline-hover:hover {
+    background-image: linear-gradient(to bottom, transparent calc(100% - 1px), var(--color-ink) calc(100% - 1px));
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+  }
+
+  /* Blinking caret for the command-bar idle state */
+  @keyframes cmdBlink {
+    0%, 49%   { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+  .cmd-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 1.05em;
+    background: var(--color-ink);
+    vertical-align: -0.15em;
+    animation: cmdBlink 1.05s steps(1, start) infinite;
+  }
+
+  /* Workspace zones — hairline grid lines without the editorial flourish */
+  .zone {
+    border-top: 1px solid var(--color-rule-soft);
+  }
+  .zone-ink {
+    border-top: 1px solid var(--color-ink);
+  }
+}

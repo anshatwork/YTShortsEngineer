@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 import ffmpeg  # ffmpeg-python
 
+from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,8 @@ logger = logging.getLogger(__name__)
 _FONT_SIZE: int      = int(os.getenv("TOP_TEXT_FONT_SIZE", "52"))
 _FONT_COLOR: str     = os.getenv("TOP_TEXT_COLOR", "white")
 _BG_ALPHA: float     = float(os.getenv("TOP_TEXT_BG_ALPHA", "0.55"))
-_TOP_Y: int          = int(os.getenv("TOP_TEXT_Y_PX", "80"))
-_LINE_CHARS: int     = int(os.getenv("TOP_TEXT_LINE_CHARS", "25"))
+_TOP_Y: int          = int(os.getenv("TOP_TEXT_Y_PX", "200"))
+_LINE_CHARS: int     = int(os.getenv("TOP_TEXT_LINE_CHARS", "20"))
 _MAX_WORKERS: int    = 4
 
 # Output resolution – must match ClippingLogicNode
@@ -216,16 +217,21 @@ def top_text_node(state: LongToShortsState) -> Dict[str, Any]:
         generated_clips – updated with new path (pointing to *_noted.mp4)
         current_step
     """
-    env_val = os.getenv("ADD_TOP_TEXT", "").strip().lower()
-    state_flag = state.get("add_top_text", False)
+    with node_stage(state, "top_text"):
+        return _top_text_impl(state)
 
-    # Env var "0"/"false" hard-disables regardless of state flag
-    if env_val in ("0", "false", "no"):
-        logger.info("TopTextNode: ADD_TOP_TEXT disabled — skipping.")
-        return {"current_step": "top_text_skipped"}
 
-    # Enabled if env var is explicitly "1"/"true" OR state flag is set
-    if env_val not in ("1", "true", "yes") and not state_flag:
+def _top_text_impl(state: LongToShortsState) -> Dict[str, Any]:
+    # Per-job state is the source of truth (set by API runner and CLI). The
+    # process-global env var is only a fallback for callers that don't populate
+    # state — relying on env alone races across concurrent jobs in the executor.
+    state_flag = state.get("add_top_text")
+    if state_flag is None:
+        enabled = os.getenv("ADD_TOP_TEXT", "").strip().lower() in ("1", "true", "yes")
+    else:
+        enabled = bool(state_flag)
+
+    if not enabled:
         logger.info("TopTextNode: not enabled — skipping.")
         return {"current_step": "top_text_skipped"}
 
@@ -234,7 +240,10 @@ def top_text_node(state: LongToShortsState) -> Dict[str, Any]:
         logger.warning("TopTextNode: no clips to process.")
         return {"generated_clips": [], "current_step": "top_text_skipped"}
 
-    output_dir = Path(os.getenv("OUTPUT_DIR", "output")) / "clips"
+    # Prefer the per-run clips_dir set by ClippingLogicNode; fall back to the
+    # legacy flat layout only when this node runs in isolation.
+    clips_dir = state.get("clips_dir")
+    output_dir = Path(clips_dir) if clips_dir else Path(os.getenv("OUTPUT_DIR", "output")) / "clips"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(

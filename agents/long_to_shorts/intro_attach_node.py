@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 
 import ffmpeg  # ffmpeg-python
 
+from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
 
 logger = logging.getLogger(__name__)
@@ -328,9 +329,22 @@ def intro_attach_node(state: LongToShortsState) -> Dict[str, Any]:
         generated_clips – updated with new path (pointing to *_final.mp4)
         current_step
     """
-    # Allow disabling intros via environment variable
-    add_intro_env = os.getenv("ADD_INTRO", "1").strip().lower()
-    if add_intro_env in ("0", "false", "no"):
+    with node_stage(state, "intro_attach"):
+        return _intro_attach_impl(state)
+
+
+def _intro_attach_impl(state: LongToShortsState) -> Dict[str, Any]:
+    # Per-job state is the source of truth (set by API runner and CLI). The
+    # process-global env var is only a fallback for callers that don't populate
+    # state — relying on env alone races across concurrent jobs in the executor.
+    # Intros default ON when neither state nor env says otherwise.
+    state_flag = state.get("add_intro")
+    if state_flag is None:
+        enabled = os.getenv("ADD_INTRO", "1").strip().lower() not in ("0", "false", "no")
+    else:
+        enabled = bool(state_flag)
+
+    if not enabled:
         logger.info("IntroAttachNode: ADD_INTRO disabled — skipping.")
         return {"current_step": "intro_skipped"}
 
@@ -340,7 +354,10 @@ def intro_attach_node(state: LongToShortsState) -> Dict[str, Any]:
         logger.warning("IntroAttachNode: no clips to process.")
         return {"generated_clips": [], "current_step": "intro_skipped"}
 
-    output_dir = Path(os.getenv("OUTPUT_DIR", "output")) / "clips"
+    # Prefer the per-run clips_dir set by ClippingLogicNode; fall back to the
+    # legacy flat layout only when this node runs in isolation.
+    clips_dir = state.get("clips_dir")
+    output_dir = Path(clips_dir) if clips_dir else Path(os.getenv("OUTPUT_DIR", "output")) / "clips"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(

@@ -8,17 +8,22 @@ Usage
 -----
     # Local video
     python run_clipping_workflow.py [VIDEO_PATH] [TRANSCRIPT_TEXT_OR_PATH] [TOP_N]
-        [--subtitles] [--top-text] [--no-intro]
+        [--subtitles] [--top-text] [--no-intro] [--fullscreen]
 
     # YouTube URL
     python run_clipping_workflow.py <YouTube-URL> [TOP_N]
-        [--subtitles] [--top-text] [--no-intro]
+        [--subtitles] [--top-text] [--no-intro] [--fullscreen]
 
 Optional feature flags
 ----------------------
-    --subtitles    Burn auto-generated subtitles onto each clip (uses Whisper)
+    --subtitles    Burn auto-generated subtitles onto each clip.
+                   For YouTube URLs, subtitles are built from the already-fetched
+                   captions (no Whisper).  For local videos, Whisper is used as
+                   a fallback.
     --top-text     Overlay the LLM hook text at the top of each clip
     --no-intro     Skip the title-card intro prepended by IntroAttachNode
+    --fullscreen   Clip at the video's native resolution (no 9:16 reframing).
+                   Default: portrait 9:16 (1080×1920) with letterbox bars.
 
 Defaults
 --------
@@ -27,6 +32,7 @@ Defaults
     intro       = ON   (disable with --no-intro)
     subtitles   = OFF  (enable with --subtitles)
     top-text    = OFF  (enable with --top-text)
+    clip-mode   = portrait 9:16  (switch to native res with --fullscreen)
 
 How it works (YouTube URL path)
 --------------------------------
@@ -34,7 +40,8 @@ How it works (YouTube URL path)
 2. Extracts the video ID and downloads the video to output/downloads/<id>.mp4
    using tools.youtube.downloader (yt-dlp under the hood).
 3. Fetches the transcript from YouTube captions via youtube-transcript-api
-   (no Whisper, no OAuth required).
+   (no Whisper, no OAuth required).  Timed segments are also stored so
+   SubtitlesNode can burn them without re-running Whisper.
 4. Runs the full LangGraph Long-to-Shorts pipeline:
       AnalyzeVideoNode → ClippingLogicNode → ContentGenNode
         → TopTextNode → SubtitlesNode → IntroAttachNode
@@ -48,10 +55,10 @@ How it works (local video path)
 2. Accepts a transcript string or path to a .txt file.
    If no transcript is supplied, it uses Whisper (base model) to auto-transcribe
    the first 10 minutes of audio from the video.
-3–6. Same as above.
+3–6. Same as above.  Subtitles use Whisper (no timed transcript available).
 
 Dependencies already in requirements.txt:
-    ffmpeg-python, openai-whisper (for auto-transcription and subtitles),
+    ffmpeg-python, openai-whisper (for auto-transcription / subtitle fallback),
     yt-dlp, youtube-transcript-api
 """
 
@@ -122,14 +129,18 @@ def is_youtube_url(s: str) -> bool:
 # Step 0 (YouTube path): Download video + fetch transcript from YT
 # ------------------------------------------------------------------
 
-def get_youtube_inputs(url: str) -> tuple[str, str]:
+def get_youtube_inputs(url: str) -> tuple[str, str, list]:
     """
     Download a YouTube video and fetch its transcript.
 
     Returns:
-        (local_video_path, transcript_text)
+        (local_video_path, transcript_text, timed_segments)
+
+        timed_segments is a list of {"text", "start", "duration"} dicts
+        from youtube-transcript-api.  Passed to SubtitlesNode so it can burn
+        subtitles without re-running Whisper.
     """
-    from tools.youtube.transcript import extract_video_id, fetch_transcript
+    from tools.youtube.transcript import extract_video_id, fetch_transcript, fetch_timed_segments
     from tools.youtube.downloader import download_video
 
     section("STEP 0 — YouTube: downloading video and fetching transcript")
@@ -151,21 +162,28 @@ def get_youtube_inputs(url: str) -> tuple[str, str]:
         download_video(url, video_path)
         ok(f"Downloaded → {video_path}")
 
-    # Fetch transcript via youtube-transcript-api (no Whisper, no OAuth)
-    info("Fetching YouTube transcript …")
+    # Fetch timed segments (keeps start/duration for subtitle alignment)
+    info("Fetching YouTube transcript (timed segments) …")
+    timed_segments: list = []
+    transcript = ""
     try:
-        transcript = fetch_transcript(url)
-        ok(f"Transcript fetched via YouTube captions  ({len(transcript)} chars)")
+        timed_segments = fetch_timed_segments(url)
+        transcript = " ".join(
+            seg["text"].strip() for seg in timed_segments if seg.get("text")
+        )
+        ok(f"Transcript fetched via YouTube captions  ({len(transcript)} chars, "
+           f"{len(timed_segments)} timed segments)")
         info(f"Preview: {transcript[:200]}…")
     except RuntimeError as yt_exc:
         warn(f"YouTube transcript unavailable: {yt_exc}")
         warn("Falling back to Whisper auto-transcription …")
         transcript = _whisper_transcribe(video_path)
+        timed_segments = []  # no timed data available from Whisper path here
 
     # Save transcript to disk for debugging / inspection
     _save_transcript(transcript, video_id)
 
-    return video_path, transcript
+    return video_path, transcript, timed_segments
 
 
 def _save_transcript(transcript: str, name: str) -> None:
@@ -311,6 +329,8 @@ def run_pipeline(
     add_subtitles: bool = False,
     add_top_text: bool = False,
     add_intro: bool = True,
+    clip_mode: str = "portrait",
+    timed_transcript: list | None = None,
 ) -> dict:
     from agents.long_to_shorts import long_to_shorts_app
 
@@ -318,9 +338,12 @@ def run_pipeline(
     info(f"Source video : {video_path}")
     info(f"Transcript   : {len(transcript)} chars")
     info(f"Top-N clips  : {top_n}")
+    info(f"Clip mode    : {clip_mode}")
     info(f"Options      : intro={'ON' if add_intro else 'OFF'}  "
          f"top-text={'ON' if add_top_text else 'OFF'}  "
          f"subtitles={'ON' if add_subtitles else 'OFF'}")
+    if timed_transcript:
+        info(f"Timed segs   : {len(timed_transcript)} (subtitles will skip Whisper)")
     print()
 
     # Apply feature flags to environment so each node can read them
@@ -334,6 +357,9 @@ def run_pipeline(
         "top_n_clips":       top_n,
         "add_top_text":      add_top_text,
         "add_subtitles":     add_subtitles,
+        "add_intro":         add_intro,
+        "clip_mode":         clip_mode,
+        "timed_transcript":  timed_transcript or [],
         "analyzed_segments": [],
         "generated_clips":   [],
         "current_step":      "initialized",
@@ -442,7 +468,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--subtitles",
         action="store_true",
         default=False,
-        help="Burn auto-generated subtitles onto each clip (requires openai-whisper)",
+        help=(
+            "Burn subtitles onto each clip. For YouTube URLs the already-fetched "
+            "captions are used (no Whisper). For local videos Whisper is the fallback."
+        ),
     )
     parser.add_argument(
         "--top-text",
@@ -458,6 +487,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="no_intro",
         help="Skip the title-card intro that IntroAttachNode prepends",
     )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        default=False,
+        dest="fullscreen",
+        help=(
+            "Clip at native resolution (no 9:16 reframing). "
+            "Default: portrait 9:16 (1080×1920) letterbox."
+        ),
+    )
 
     return parser
 
@@ -469,6 +508,7 @@ def main():
     add_intro     = not args.no_intro
     add_subtitles = args.subtitles
     add_top_text  = args.top_text
+    clip_mode     = "fullscreen" if args.fullscreen else "portrait"
 
     first_arg = args.source
 
@@ -487,15 +527,14 @@ def main():
         print("  LONG-TO-SHORTS CLIP GENERATION WORKFLOW  [YouTube URL mode]")
         print(f"  URL       : {yt_url}")
         print(f"  Top-N     : {top_n}")
+        print(f"  Clip mode : {clip_mode}")
         print(f"  Intro     : {'ON' if add_intro else 'OFF'}")
         print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
         print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}")
         print(SEP)
 
         try:
-            Path("output/clips").mkdir(parents=True, exist_ok=True)
-
-            video_path, transcript = get_youtube_inputs(yt_url)
+            video_path, transcript, timed_segments = get_youtube_inputs(yt_url)
             probe_video(video_path)
 
             section("STEP 2 — Transcript")
@@ -506,6 +545,8 @@ def main():
                 add_subtitles=add_subtitles,
                 add_top_text=add_top_text,
                 add_intro=add_intro,
+                clip_mode=clip_mode,
+                timed_transcript=timed_segments,
             )
             print_results(final_state)
 
@@ -537,14 +578,13 @@ def main():
         print("  LONG-TO-SHORTS CLIP GENERATION WORKFLOW  [local video mode]")
         print(f"  Video     : {video_path}")
         print(f"  Top-N     : {top_n}")
+        print(f"  Clip mode : {clip_mode}")
         print(f"  Intro     : {'ON' if add_intro else 'OFF'}")
         print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
         print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}")
         print(SEP)
 
         try:
-            Path("output/clips").mkdir(parents=True, exist_ok=True)
-
             probe_video(video_path)
             transcript = get_transcript(transcript_arg, video_path)
 
@@ -553,6 +593,8 @@ def main():
                 add_subtitles=add_subtitles,
                 add_top_text=add_top_text,
                 add_intro=add_intro,
+                clip_mode=clip_mode,
+                timed_transcript=None,  # local path: no timed captions
             )
             print_results(final_state)
 

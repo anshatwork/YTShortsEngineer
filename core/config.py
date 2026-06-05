@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     VIDEO_HEIGHT: int = 1920    
     class Config:
         env_file = ".env"
-        env_file_encoding = "utf-8" # Ignore extra fields in .env that aren't defined
+        env_file_encoding = "utf-8"
+        extra = "ignore"  # Ignore extra fields in .env that aren't defined here
 
 # Global settings instance
 try:

@@ -74,18 +74,38 @@ class ClipObject(TypedDict):
     hashtags: Optional[List[str]]      # 5 SEO hashtags (no # prefix)
 
 
-class LongToShortsState(TypedDict):
+class LongToShortsState(TypedDict, total=False):
     """Global state for the Long-to-Shorts conversion sub-graph."""
     # --- Inputs ---
-    
-    
     source_video_path: str              # Local path to the long-form video file
     transcript: str                     # Full text transcript of the video
     top_n_clips: int                    # Max clips to extract (default: 5)
 
-    # --- Feature flags (can also be overridden by env vars) ---
+    # --- Job tracking (populated by api/runner.py; absent in CLI runs) ---
+    job_id: str                         # Job UUID for log correlation
+    current_node: str                   # Name of the node currently executing
+
+    # --- Per-run output isolation (set by ClippingLogicNode, read by all
+    #     downstream nodes that write clip artifacts). Prevents concurrent
+    #     jobs and successive runs from overwriting each other's outputs. ---
+    run_id: str                         # job_id when set by API; auto-generated for CLI runs
+    clips_dir: str                      # Resolved per-run directory for all clip artifacts
+
+    # --- Feature flags (per-job; preferred over env vars when present) ---
     add_top_text: bool                  # Overlay hook text at top of clip (TopTextNode)
     add_subtitles: bool                 # Burn subtitles into clip (SubtitlesNode)
+    add_intro: bool                     # Prepend title-card intro (IntroAttachNode)
+
+    # --- Clip mode ---
+    # "portrait"   → 9:16 (1080×1920) with letterbox/pillarbox  [default]
+    # "fullscreen" → original resolution, no reframing
+    clip_mode: str
+
+    # --- Timed transcript (optional) ---
+    # List of {"text": str, "start": float, "duration": float} dicts from
+    # YouTube captions / youtube-transcript-api.  When present, SubtitlesNode
+    # will use this instead of running Whisper.
+    timed_transcript: Optional[List[Dict[str, Any]]]
 
     # --- Intermediate / Outputs ---
     analyzed_segments: List[ClipObject] # Hook-scored segments from AnalyzeVideoNode

@@ -15,8 +15,10 @@ For each successfully extracted clip in generated_clips:
 
 import logging
 import re
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
+from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
 from tools.llm.ollama import get_chat_model
 
@@ -73,12 +75,46 @@ def _get_excerpt(
 ) -> str:
     """Return the substring of *transcript* that corresponds to [start, end] seconds."""
     total_chars = len(transcript)
-    # Estimate character positions from timing
     start_char = max(0, int(start * chars_per_second))
     end_char = min(total_chars, int(end * chars_per_second))
     excerpt = transcript[start_char:end_char].strip()
-    # Fallback: return up to 600 chars if estimation produces nothing
     return excerpt or transcript[:600]
+
+
+def _get_excerpt_timed(
+    timed_transcript: List[Dict[str, Any]], start: float, end: float
+) -> str:
+    """Extract transcript text from timed caption segments overlapping [start, end].
+
+    Prefers this over the character-heuristic approach when YouTube captions are
+    available, because segment timestamps are exact.
+    """
+    words = []
+    for seg in timed_transcript:
+        seg_start = float(seg.get("start", 0))
+        seg_end = seg_start + float(seg.get("duration", 0))
+        if seg_end >= start and seg_start <= end:
+            words.append(seg.get("text", "").strip())
+    return " ".join(words).strip()
+
+
+def _invoke_with_retry(llm: Any, messages: List[Any], max_attempts: int = 3) -> str:
+    """Invoke the LLM with exponential backoff on transient failures."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            response = llm.invoke(messages)
+            return response.content if hasattr(response, "content") else str(response)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                wait = 2 ** attempt  # 1s, 2s
+                logger.warning(
+                    f"LLM attempt {attempt + 1}/{max_attempts} failed ({exc}), "
+                    f"retrying in {wait}s…"
+                )
+                time.sleep(wait)
+    raise RuntimeError(f"LLM failed after {max_attempts} attempts") from last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +205,14 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
         generated_clips – same list with title, summary, hook_text, hashtags filled in
         current_step
     """
+    with node_stage(state, "content_gen"):
+        return _content_gen_impl(state)
+
+
+def _content_gen_impl(state: LongToShortsState) -> Dict[str, Any]:
     clips: List[ClipObject] = state.get("generated_clips", [])
     transcript: str = state.get("transcript", "")
+    timed_transcript: Optional[List[Dict[str, Any]]] = state.get("timed_transcript")
 
     if not clips:
         logger.warning("ContentGenNode: no clips to generate content for.")
@@ -180,6 +222,8 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
         }
 
     logger.info(f"ContentGenNode: generating metadata for {len(clips)} clip(s).")
+    if timed_transcript:
+        logger.info("ContentGenNode: using timed transcript for precise excerpt extraction.")
 
     llm_available = True
     llm = None
@@ -198,7 +242,13 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
         updated: ClipObject = dict(clip)  # type: ignore[assignment]
 
         if llm_available and llm is not None:
-            excerpt = _get_excerpt(transcript, start, end)
+            if timed_transcript:
+                excerpt = _get_excerpt_timed(timed_transcript, start, end)
+                if not excerpt:
+                    excerpt = _get_excerpt(transcript, start, end)
+            else:
+                excerpt = _get_excerpt(transcript, start, end)
+
             prompt_text = _CONTENT_PROMPT.format(
                 max_title_chars=_TITLE_MAX_CHARS,
                 max_hook_chars=_HOOK_TEXT_MAX_CHARS,
@@ -206,9 +256,15 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
             )
             try:
                 from langchain_core.messages import HumanMessage
-                response = llm.invoke([HumanMessage(content=prompt_text)])
-                raw = response.content if hasattr(response, "content") else str(response)
+                raw = _invoke_with_retry(llm, [HumanMessage(content=prompt_text)])
                 content = _parse_content_response(raw)
+
+                # Post-parse guards: ensure required fields are never empty
+                if not content["title"]:
+                    content["title"] = f"Clip {clip_id}"[:_TITLE_MAX_CHARS]
+                if not content["hook_text"]:
+                    content["hook_text"] = content["title"][:_HOOK_TEXT_MAX_CHARS]
+
                 updated["title"]     = content["title"]
                 updated["summary"]   = content["summary"]
                 updated["hook_text"] = content["hook_text"]
@@ -221,14 +277,16 @@ def content_gen_node(state: LongToShortsState) -> Dict[str, Any]:
                 )
             except Exception as exc:
                 logger.error(f"  ✗ {clip_id}: LLM call failed – {exc}. Using placeholder.")
-                updated["title"]     = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
+                fallback_title = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
+                updated["title"]     = fallback_title
                 updated["summary"]   = f"Highlight segment extracted from {start:.1f}s to {end:.1f}s."
-                updated["hook_text"] = None
+                updated["hook_text"] = fallback_title[:_HOOK_TEXT_MAX_CHARS]
                 updated["hashtags"]  = []
         else:
-            updated["title"]     = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
+            fallback_title = f"Clip {clip_id} ({start:.0f}s–{end:.0f}s)"[:_TITLE_MAX_CHARS]
+            updated["title"]     = fallback_title
             updated["summary"]   = f"Highlight segment extracted from {start:.1f}s to {end:.1f}s."
-            updated["hook_text"] = None
+            updated["hook_text"] = fallback_title[:_HOOK_TEXT_MAX_CHARS]
             updated["hashtags"]  = []
 
         enriched_clips.append(updated)

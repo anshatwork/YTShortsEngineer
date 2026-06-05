@@ -193,6 +193,73 @@ Place your background video (Minecraft, GTA parkour, etc.) in `./assets/backgrou
 - If ImageMagick warnings appear, install [ImageMagick](https://imagemagick.org/)
 - Set `IMAGEMAGICK_BINARY` environment variable if needed
 
+## Persistence and Authentication (Supabase)
+
+The Long-to-Shorts API and frontend support persistent, multi-user job storage via [Supabase](https://supabase.com).
+
+### 1 — Create a Supabase project
+
+1. Go to [supabase.com](https://supabase.com) and create a free project.
+2. In **Authentication → Providers**, enable **Google** and/or **GitHub**.
+   - Add `http://localhost:3000/auth/callback` (and your production URL) to **Redirect URLs** under Authentication → URL Configuration.
+3. In **SQL Editor**, run the migration:
+   ```
+   supabase/migrations/001_jobs.sql
+   ```
+   This creates the `clip_jobs`, `edit_jobs`, and `uploads` tables with RLS policies.
+
+### 2 — Configure the FastAPI backend
+
+Copy `.env.example` to `.env` and fill in the Supabase section:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key   # never expose publicly
+SUPABASE_JWT_SECRET=your-jwt-secret               # Project Settings → API → JWT Secret
+
+JOB_STORE=supabase        # switch from in-memory to Supabase
+AUTH_DISABLED=false        # require JWT on all job endpoints
+FRONTEND_URL=http://localhost:3000   # tighten CORS
+```
+
+`AUTH_DISABLED=true` (the default in the example) skips JWT verification so you can run the pipeline locally without signing in.
+
+### 3 — Configure the Next.js frontend
+
+Copy `frontend/.env.local.example` to `frontend/.env.local`:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+```
+
+### 4 — Run both servers
+
+```bash
+# FastAPI (backend)
+python agents/long_to_shorts/api/server.py
+
+# Next.js (frontend)
+cd frontend && npm run dev
+```
+
+Open `http://localhost:3000`. You will be redirected to `/login` to sign in with Google or GitHub. After sign-in, all job submissions are persisted under your user account and survive API restarts.
+
+### Testing checklist
+
+- [ ] Sign in with Google / GitHub → redirected to workspace
+- [ ] Submit a job → row appears in Supabase `clip_jobs` table with your `user_id`
+- [ ] Restart the FastAPI server → `GET /jobs` still returns your job history
+- [ ] Open the job detail page → pipeline progress tracked via `current_node`
+- [ ] Log in with a second account → cannot see the first account's jobs (404)
+- [ ] Pipeline completes → `clips` JSONB populated; frontend renders clip grid
+- [ ] TTS edit job completes → `edit_jobs` row updated, output URL accessible
+- [ ] Sign out → redirected to `/login`; workspace not accessible without auth
+
+---
+
 ## Roadmap
 
 - [ ] Implement actual YouTube upload (OAuth2)
@@ -200,7 +267,9 @@ Place your background video (Minecraft, GTA parkour, etc.) in `./assets/backgrou
 - [ ] Background video auto-download from stock sources
 - [ ] A/B testing for caption styles
 - [ ] Batch processing for multiple topics
-- [ ] Web UI for workflow management
+- [ ] Supabase Storage for clip/upload files (phase 2)
+- [ ] Job cancellation + retention cleanup cron
+- [ ] Per-user rate limits on job submission
 
 ## License
 

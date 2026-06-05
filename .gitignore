@@ -8,6 +8,7 @@ output/
 
 # Ignore environment variables
 .env
+.env.example
 
 # Python cache
 __pycache__/
@@ -22,6 +23,8 @@ __pycache__/
 *.swp
 *.swo
 
+_run_migrations.py
+
 ./output/
 # OS
 .DS_Store
@@ -29,6 +32,8 @@ Thumbs.db
 
 # Logs
 *.log
+tests
+teat/*
 
 # Whisper model cache
 ~/.cache/whisper/

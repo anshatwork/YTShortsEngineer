@@ -4,17 +4,29 @@ agents/long_to_shorts/analyze_video_node.py
 AnalyzeVideoNode – LLM-powered transcript segmentation and Hook Scoring.
 
 Workflow:
-  1.  Chunk the transcript into overlapping ~60-second windows (by char count).
-  2.  Send each chunk to the LLM with a structured JSON prompt.
-  3.  Parse the response; every segment gets a hook_score (1–10).
-  4.  Sort by hook_score descending and keep the top `top_n_clips`.
-  5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+  1.  Probe the source video for its actual duration. This is the hard
+      upper bound for any clip we propose.
+  2.  Chunk the transcript into overlapping ~60-second windows. When
+      ``state["timed_transcript"]`` is present (YouTube captions API),
+      each chunk's start/end is a REAL timestamp pulled from the captions.
+      Otherwise we estimate from character offsets, calibrated from the
+      probed duration when possible.
+  3.  Send each chunk to the LLM with a structured JSON prompt.
+  4.  Parse the response; every segment gets a hook_score (1–10).
+  5.  Filter any segment that lands outside the probed video duration —
+      these are unrecoverable downstream.
+  6.  Sort by hook_score descending and keep the top `top_n_clips`.
+  7.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
 """
 
 import json
 import logging
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import ffmpeg  # ffmpeg-python — for source duration probe
+
+from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
 from tools.llm.ollama import get_chat_model
 
@@ -25,6 +37,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Approximate characters per second of speech at a moderate pace (~130 wpm).
+# Only used as a last-resort fallback when neither a timed transcript nor a
+# probable video duration is available; both override this estimate.
 _CHARS_PER_SECOND: float = 10.5
 # Target segment length in seconds.
 _TARGET_SEGMENT_SECONDS: float = 55.0
@@ -78,29 +92,150 @@ Transcript excerpt (starts at {offset_seconds:.1f}s into the video):
 
 
 # ---------------------------------------------------------------------------
-# Helper: chunk transcript into overlapping windows
+# Source-video duration probe (best-effort, never raises)
 # ---------------------------------------------------------------------------
 
-def _chunk_transcript(transcript: str) -> List[Dict[str, Any]]:
-    """
-    Split *transcript* into overlapping character windows.
+def _probe_duration(path: str) -> Optional[float]:
+    """Return the source video duration in seconds, or None on failure.
 
-    Returns a list of dicts:
-        {"text": str, "offset_seconds": float}
-    where *offset_seconds* is the estimated start time of that chunk in the video.
+    Anything that goes wrong here is non-fatal — analyse can still run with
+    a CPS estimate. We just lose the hard upper bound on clip timestamps.
+    """
+    if not path or not Path(path).exists():
+        return None
+    try:
+        info = ffmpeg.probe(path)
+        duration = float(info["format"].get("duration", 0))
+        return duration if duration > 0 else None
+    except Exception as exc:
+        logger.warning(f"AnalyzeVideoNode: video probe failed ({exc}); falling back to CPS estimate.")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Chunking — two strategies, identical output shape
+# ---------------------------------------------------------------------------
+
+def _chunk_from_timed_segments(
+    segments: List[Dict[str, Any]],
+    max_duration_seconds: Optional[float],
+) -> List[Dict[str, Any]]:
+    """Build chunks from YouTube-caption timed segments.
+
+    Each output chunk carries REAL start/end timestamps drawn from the
+    captions. Segments past *max_duration_seconds* (the actual length of
+    the downloaded video file) are dropped before chunking so the LLM
+    never picks content that doesn't exist in the video.
+
+    Output entries: ``{text, offset_seconds, duration_seconds, chunk_idx}``
+    """
+    if max_duration_seconds is not None:
+        original_n = len(segments)
+        segments = [
+            s for s in segments
+            if float(s.get("start", 0)) < max_duration_seconds
+        ]
+        dropped = original_n - len(segments)
+        if dropped:
+            logger.warning(
+                f"AnalyzeVideoNode: dropped {dropped} caption segment(s) "
+                f"past video duration ({max_duration_seconds:.1f}s) — "
+                f"the transcript covers more material than the downloaded file."
+            )
+
+    if not segments:
+        return []
+
+    chunks: List[Dict[str, Any]] = []
+    chunk_idx = 0
+    i = 0
+    n = len(segments)
+
+    while i < n:
+        chunk_start_time = float(segments[i]["start"])
+
+        # Accumulate segments until we hit the target chunk length
+        j = i
+        text_parts: List[str] = []
+        last_end_time = chunk_start_time
+        while j < n:
+            s_start = float(segments[j]["start"])
+            s_dur = float(segments[j].get("duration", 0))
+            s_end = s_start + s_dur
+            if s_start - chunk_start_time > _TARGET_SEGMENT_SECONDS and len(text_parts) > 0:
+                break
+            text_parts.append(str(segments[j].get("text", "")).strip())
+            last_end_time = s_end
+            j += 1
+
+        # Clamp the chunk's end to the video duration (so the LLM's relative
+        # offsets can't push it past the file's last frame).
+        if max_duration_seconds is not None:
+            last_end_time = min(last_end_time, max_duration_seconds)
+
+        chunk_text = " ".join(p for p in text_parts if p)
+        chunk_duration = max(0.0, last_end_time - chunk_start_time)
+
+        if chunk_duration > 0 and chunk_text:
+            chunks.append({
+                "text": chunk_text,
+                "offset_seconds": chunk_start_time,
+                "duration_seconds": chunk_duration,
+                "chunk_idx": chunk_idx,
+            })
+            chunk_idx += 1
+
+        # Slide forward with overlap: rewind by _OVERLAP_SECONDS worth of time
+        # by stepping back through the segments until we cover the overlap.
+        if j >= n:
+            break
+        # Advance i to just inside the overlap window
+        target_next_start = max(chunk_start_time, last_end_time - _OVERLAP_SECONDS)
+        new_i = j
+        for k in range(j - 1, i, -1):
+            if float(segments[k]["start"]) <= target_next_start:
+                new_i = k
+                break
+        if new_i <= i:  # guarantee forward progress
+            new_i = i + 1
+        i = new_i
+
+    return chunks
+
+
+def _chunk_from_text(
+    transcript: str,
+    chars_per_second: float,
+    max_duration_seconds: Optional[float],
+) -> List[Dict[str, Any]]:
+    """Char-offset chunking, calibrated by the probed video duration when
+    possible. Any chunk whose offset would exceed *max_duration_seconds*
+    is dropped.
     """
     chunks: List[Dict[str, Any]] = []
     start = 0
     chunk_idx = 0
+    cps = max(1.0, chars_per_second)
 
     while start < len(transcript):
         end = min(start + _CHUNK_SIZE, len(transcript))
         chunk_text = transcript[start:end]
-        offset_seconds = (start / _CHARS_PER_SECOND)
+        offset_seconds = start / cps
+        duration_seconds = (end - start) / cps
+
+        # Stop once we've walked past the video end
+        if max_duration_seconds is not None and offset_seconds >= max_duration_seconds:
+            break
+
+        # Clamp the chunk's apparent duration so the LLM can't pick past
+        # the video end either.
+        if max_duration_seconds is not None:
+            duration_seconds = min(duration_seconds, max_duration_seconds - offset_seconds)
 
         chunks.append({
             "text": chunk_text,
             "offset_seconds": offset_seconds,
+            "duration_seconds": duration_seconds,
             "chunk_idx": chunk_idx,
         })
 
@@ -108,6 +243,10 @@ def _chunk_transcript(transcript: str) -> List[Dict[str, Any]]:
         start += _CHUNK_SIZE - _OVERLAP_SIZE  # slide with overlap
 
     return chunks
+
+
+# Back-compat alias — preserves the old name in case anything imports it.
+_chunk_transcript = _chunk_from_text
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +319,16 @@ def _parse_llm_json(
 # ---------------------------------------------------------------------------
 
 def _make_synthetic_segments(
-    transcript: str, top_n: int
+    transcript: str, top_n: int, max_duration_seconds: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     When LLM analysis fails entirely, divide the transcript into evenly-spaced
     60-second segments so the rest of the pipeline can still run.
     """
-    total_seconds = len(transcript) / _CHARS_PER_SECOND
+    if max_duration_seconds is not None and max_duration_seconds > 0:
+        total_seconds = max_duration_seconds
+    else:
+        total_seconds = len(transcript) / _CHARS_PER_SECOND
     segment_len = 60.0
     segments = []
     t = 0.0
@@ -212,32 +354,71 @@ def analyze_video_node(state: LongToShortsState) -> Dict[str, Any]:
     LangGraph node: score transcript segments and return top ClipObject stubs.
 
     Input state keys used:
-        transcript   – full text transcript of the long video
-        top_n_clips  – how many top clips to keep (default: 5)
-        source_video_path – propagated to each ClipObject
+        transcript        – full text transcript of the long video
+        top_n_clips       – how many top clips to keep (default: 5)
+        source_video_path – probed for actual video duration; propagated to clips
+        timed_transcript  – preferred chunk source when available (YouTube captions)
 
     Output state keys:
         analyzed_segments – List[ClipObject] sorted by hook_score desc
         current_step
     """
+    with node_stage(state, "analyze_video"):
+        return _analyze_video_impl(state)
+
+
+def _analyze_video_impl(state: LongToShortsState) -> Dict[str, Any]:
     transcript: str = state.get("transcript", "")
     top_n: int = state.get("top_n_clips", 5)
     source_path: str = state.get("source_video_path", "")
+    timed_segments: Optional[List[Dict[str, Any]]] = state.get("timed_transcript")
 
-    if not transcript.strip():
+    if not transcript.strip() and not timed_segments:
         logger.error("AnalyzeVideoNode: transcript is empty.")
         return {"analyzed_segments": [], "current_step": "analysis_failed",
                 "error": "Empty transcript provided."}
+
+    # --- 1. Probe the actual video duration — hard upper bound for clip timestamps
+    video_duration = _probe_duration(source_path)
+    if video_duration:
+        logger.info(
+            f"AnalyzeVideoNode: source video duration = {video_duration:.1f}s "
+            f"(clip timestamps will be bounded by this)."
+        )
 
     logger.info(
         f"AnalyzeVideoNode: analysing {len(transcript)} chars, "
         f"requesting top-{top_n} clips."
     )
 
-    chunks = _chunk_transcript(transcript)
-    logger.info(f"AnalyzeVideoNode: split into {len(chunks)} chunks.")
+    # --- 2. Pick a chunking strategy
+    if timed_segments:
+        chunks = _chunk_from_timed_segments(timed_segments, video_duration)
+        logger.info(
+            f"AnalyzeVideoNode: chunked from {len(timed_segments)} timed caption "
+            f"segments → {len(chunks)} chunks (real timestamps)."
+        )
+    else:
+        # Calibrate CPS from the probed duration when we can, so timestamp
+        # estimates don't drift the way the constant did.
+        if video_duration and len(transcript) > 0:
+            calibrated_cps = len(transcript) / video_duration
+            logger.info(
+                f"AnalyzeVideoNode: calibrated chars-per-second = {calibrated_cps:.2f} "
+                f"(transcript {len(transcript)} chars / video {video_duration:.1f}s); "
+                f"default was {_CHARS_PER_SECOND}."
+            )
+        else:
+            calibrated_cps = _CHARS_PER_SECOND
+        chunks = _chunk_from_text(transcript, calibrated_cps, video_duration)
+        logger.info(f"AnalyzeVideoNode: split into {len(chunks)} chunks.")
 
-    # Collect raw scored segments from LLM
+    if not chunks:
+        logger.error("AnalyzeVideoNode: produced 0 chunks (transcript empty or all past video end).")
+        return {"analyzed_segments": [], "current_step": "analysis_failed",
+                "error": "No analysable transcript content within the video duration."}
+
+    # --- 3. Collect raw scored segments from LLM
     raw_segments: List[Dict[str, Any]] = []
     llm_available = True
 
@@ -257,11 +438,10 @@ def analyze_video_node(state: LongToShortsState) -> Dict[str, Any]:
                 from langchain_core.messages import HumanMessage
                 response = llm.invoke([HumanMessage(content=prompt_text)])
                 raw_text = response.content if hasattr(response, "content") else str(response)
-                chunk_duration = len(chunk["text"]) / _CHARS_PER_SECOND
                 segment = _parse_llm_json(
                     raw_text,
                     chunk["offset_seconds"],
-                    chunk_duration_seconds=chunk_duration,
+                    chunk_duration_seconds=chunk["duration_seconds"],
                 )
                 raw_segments.append(segment)
                 logger.debug(
@@ -273,16 +453,49 @@ def analyze_video_node(state: LongToShortsState) -> Dict[str, Any]:
                     f"AnalyzeVideoNode: failed to parse chunk {chunk['chunk_idx']}: {exc}"
                 )
 
-    # Fallback if LLM yielded nothing
+    # --- 4. Fallback if LLM yielded nothing
     if not raw_segments:
         logger.warning("AnalyzeVideoNode: no segments from LLM; using synthetic fallback.")
-        raw_segments = _make_synthetic_segments(transcript, top_n)
+        raw_segments = _make_synthetic_segments(transcript, top_n, video_duration)
 
-    # Sort and keep top-N
+    # --- 5. Filter out anything still past the video end (belt-and-braces:
+    #        a chunk near the boundary plus the +/- MIN_SEGMENT padding in
+    #        _parse_llm_json can still nudge a clip past `video_duration`).
+    if video_duration:
+        before = len(raw_segments)
+        raw_segments = [
+            s for s in raw_segments
+            if s["start_time"] < video_duration
+        ]
+        # Clamp ends that exceed duration but whose start is still inside
+        for s in raw_segments:
+            if s["end_time"] > video_duration:
+                s["end_time"] = video_duration
+            # Drop anything reduced below the minimum useful clip length
+        raw_segments = [
+            s for s in raw_segments
+            if s["end_time"] - s["start_time"] >= MIN_SEGMENT_SECONDS
+        ]
+        dropped = before - len(raw_segments)
+        if dropped:
+            logger.warning(
+                f"AnalyzeVideoNode: filtered {dropped} segment(s) that fell "
+                f"outside the video duration after LLM scoring."
+            )
+
+    if not raw_segments:
+        logger.error(
+            "AnalyzeVideoNode: no segments remain after duration filtering. "
+            "The transcript and the downloaded video appear to cover different content."
+        )
+        return {"analyzed_segments": [], "current_step": "analysis_failed",
+                "error": "No transcript content matched the downloaded video duration."}
+
+    # --- 6. Sort and keep top-N
     raw_segments.sort(key=lambda s: s["hook_score"], reverse=True)
     top_segments = raw_segments[:top_n]
 
-    # Build ClipObject stubs
+    # --- 7. Build ClipObject stubs
     clip_objects: List[ClipObject] = []
     for i, seg in enumerate(top_segments):
         clip: ClipObject = {

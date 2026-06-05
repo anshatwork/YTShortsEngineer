@@ -1,0 +1,1426 @@
+﻿============================= test session starts =============================
+collecting ... collected 11 items
+
+tests/test_api.py::TestSubmitJob::test_youtube_returns_202 ERROR         [  9%]
+tests/test_api.py::TestSubmitJob::test_local_video_returns_202 ERROR     [ 18%]
+tests/test_api.py::TestSubmitJob::test_no_source_returns_422 ERROR       [ 27%]
+tests/test_api.py::TestSubmitJob::test_both_sources_returns_422 ERROR    [ 36%]
+tests/test_api.py::TestSubmitJob::test_invalid_top_n_returns_422 ERROR   [ 45%]
+tests/test_api.py::TestGetJob::test_get_existing_job ERROR               [ 54%]
+tests/test_api.py::TestGetJob::test_get_unknown_job_returns_404 ERROR    [ 63%]
+tests/test_api.py::TestGetJob::test_done_job_has_clips ERROR             [ 72%]
+tests/test_api.py::TestListJobs::test_empty_list ERROR                   [ 81%]
+tests/test_api.py::TestListJobs::test_submitted_job_appears_in_list ERROR [ 90%]
+tests/test_api.py::test_health ERROR                                     [100%]
+
+=================================== ERRORS ====================================
+__________ ERROR at setup of TestSubmitJob.test_youtube_returns_202 ___________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+________ ERROR at setup of TestSubmitJob.test_local_video_returns_202 _________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+_________ ERROR at setup of TestSubmitJob.test_no_source_returns_422 __________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+________ ERROR at setup of TestSubmitJob.test_both_sources_returns_422 ________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+_______ ERROR at setup of TestSubmitJob.test_invalid_top_n_returns_422 ________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+_____________ ERROR at setup of TestGetJob.test_get_existing_job ______________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+________ ERROR at setup of TestGetJob.test_get_unknown_job_returns_404 ________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+____________ ERROR at setup of TestGetJob.test_done_job_has_clips _____________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+_______________ ERROR at setup of TestListJobs.test_empty_list ________________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+______ ERROR at setup of TestListJobs.test_submitted_job_appears_in_list ______
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+________________________ ERROR at setup of test_health ________________________
+
+    @pytest.fixture
+    def client():
+        """TestClient with a real executor but mocked runner."""
+>       from agents.long_to_shorts.api.app import app
+
+tests\test_api.py:36: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts
+    ~~~~~~~~~~~~~~~~~~~~~
+    Long-form video \u2192 multiple 9:16 YouTube Shorts clipping pipeline.
+    
+    Exposes:
+        long_to_shorts_app  û compiled LangGraph StateGraph ready to .invoke()
+    """
+    
+>   from agents.long_to_shorts.graph import long_to_shorts_app  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+agents\long_to_shorts\__init__.py:10: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/graph.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Standalone LangGraph StateGraph for the Long-to-Shorts clipping pipeline.
+    
+    Graph topology (linear):
+    
+        START
+          \u2502
+          \u25bc
+      analyze_video       \u2190 AnalyzeVideoNode:  LLM hook-scores transcript segments
+          \u2502
+          \u25bc
+      clipping_logic      \u2190 ClippingLogicNode: parallel ffmpeg 9:16 extraction (Map)
+          \u2502
+          \u25bc
+      content_gen         \u2190 ContentGenNode:    viral title + summary + hook_text + hashtags
+          \u2502
+          \u25bc
+      top_text            \u2190 TopTextNode:       burn hook-text overlay at top of clip (optional)
+          \u2502
+          \u25bc
+      subtitles           \u2190 SubtitlesNode:     Whisper transcription + burn subtitles (optional)
+          \u2502
+          \u25bc
+      intro_attach        \u2190 IntroAttachNode:   prepend title-card intro + crossfade (optional)
+          \u2502
+          \u25bc
+        END
+    
+    Optional nodes are controlled independently:
+        TopTextNode    ù env ADD_TOP_TEXT=1   or state["add_top_text"]  = True
+        SubtitlesNode  ù env ADD_SUBTITLES=1  or state["add_subtitles"] = True
+        IntroAttachNode ù env ADD_INTRO=0 disables it   (default: enabled)
+    """
+    
+    from langgraph.graph import StateGraph, START, END
+    
+    from agents.state import LongToShortsState
+>   from agents.long_to_shorts.analyze_video_node import analyze_video_node
+
+agents\long_to_shorts\graph.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    agents/long_to_shorts/analyze_video_node.py
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    AnalyzeVideoNode û LLM-powered transcript segmentation and Hook Scoring.
+    
+    Workflow:
+      1.  Chunk the transcript into overlapping ~60-second windows (by char count).
+      2.  Send each chunk to the LLM with a structured JSON prompt.
+      3.  Parse the response; every segment gets a hook_score (1û10).
+      4.  Sort by hook_score descending and keep the top `top_n_clips`.
+      5.  Return a list of ClipObject stubs (path / title / summary are None at this stage).
+    """
+    
+    import json
+    import logging
+    from typing import Any, Dict, List
+    
+    from agents.state import ClipObject, LongToShortsState
+>   from tools.llm.ollama import get_chat_model
+
+agents\long_to_shorts\analyze_video_node.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    tools/llm/ollama.py
+    ~~~~~~~~~~~~~~~~~~~~
+    Ollama LLM provider ù runs models locally via the Ollama daemon.
+    
+    Public surface
+    --------------
+        OllamaLLM            û BaseLLMProvider implementation (plain generate())
+        get_chat_model()     û returns a LangChain ChatOllama instance, ready for
+                               use with .invoke([HumanMessage(...)]) in agent nodes
+    
+    Configuration (environment variables, all optional)
+    ----------------------------------------------------
+        OLLAMA_MODEL         û model tag to pull/run  (default: "mistral")
+        OLLAMA_BASE_URL      û Ollama server base URL  (default: "http://localhost:11434")
+        OLLAMA_TEMPERATURE   û sampling temperature    (default: 0.3)
+        OLLAMA_MAX_TOKENS    û max tokens to generate  (default: 512)
+    
+    Usage in agent nodes
+    --------------------
+        from tools.llm.ollama import get_chat_model
+    
+        llm = get_chat_model()
+        response = llm.invoke([HumanMessage(content="...")])
+        text = response.content
+    """
+    
+    import logging
+    import os
+    from typing import Optional
+    
+>   from langchain_ollama import ChatOllama
+E   ModuleNotFoundError: No module named 'langchain_ollama'
+
+tools\llm\ollama.py:32: ModuleNotFoundError
+=========================== short test summary info ===========================
+ERROR tests/test_api.py::TestSubmitJob::test_youtube_returns_202 - ModuleNotF...
+ERROR tests/test_api.py::TestSubmitJob::test_local_video_returns_202 - Module...
+ERROR tests/test_api.py::TestSubmitJob::test_no_source_returns_422 - ModuleNo...
+ERROR tests/test_api.py::TestSubmitJob::test_both_sources_returns_422 - Modul...
+ERROR tests/test_api.py::TestSubmitJob::test_invalid_top_n_returns_422 - Modu...
+ERROR tests/test_api.py::TestGetJob::test_get_existing_job - ModuleNotFoundEr...
+ERROR tests/test_api.py::TestGetJob::test_get_unknown_job_returns_404 - Modul...
+ERROR tests/test_api.py::TestGetJob::test_done_job_has_clips - ModuleNotFound...
+ERROR tests/test_api.py::TestListJobs::test_empty_list - ModuleNotFoundError:...
+ERROR tests/test_api.py::TestListJobs::test_submitted_job_appears_in_list - M...
+ERROR tests/test_api.py::test_health - ModuleNotFoundError: No module named '...
+============================= 11 errors in 1.13s ==============================
