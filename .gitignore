@@ -37,3 +37,4 @@ teat/*
 
 # Whisper model cache
 ~/.cache/whisper/
+assets/*

@@ -1,8 +1,9 @@
 """
 agents/long_to_shorts/srt_utils.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Minimal SRT parser — the inverse of the SRT *builder* in subtitles_node.py
-(`_build_srt` / `_seconds_to_srt_ts`).
+Minimal SRT parser for user-supplied .srt files. Produces the same timed
+segment dicts ({"text", "start", "duration"}) that SubtitlesNode burns via its
+ASS builder (subtitles_node._build_ass).
 
 Parses standard SubRip blocks of the form::
 

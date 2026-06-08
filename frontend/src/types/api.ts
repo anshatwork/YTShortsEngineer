@@ -3,6 +3,8 @@
 
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export type ClipMode = "portrait" | "fullscreen";
+export type SubtitlePosition = "top" | "middle" | "bottom";
+export type SubtitleSize = "small" | "medium" | "large";
 
 export interface ClipResult {
   clip_id: string;
@@ -37,6 +39,8 @@ export interface JobRequest {
   transcript?: string;
   top_n: number;          // 1–20, default 3
   add_subtitles: boolean; // default false
+  subtitle_position?: SubtitlePosition; // default "bottom" (only used when add_subtitles)
+  subtitle_size?: SubtitleSize;         // default "medium" (only used when add_subtitles)
   add_top_text: boolean;  // default false
   add_intro: boolean;     // default true
   clip_mode: ClipMode;    // default "portrait"

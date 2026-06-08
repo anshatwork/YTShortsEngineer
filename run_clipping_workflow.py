@@ -8,18 +8,25 @@ Usage
 -----
     # Local video
     python run_clipping_workflow.py [VIDEO_PATH] [TRANSCRIPT_TEXT_OR_PATH] [TOP_N]
-        [--subtitles] [--top-text] [--no-intro] [--fullscreen]
+        [--subtitles] [--subtitle-position {top,middle,bottom}]
+        [--subtitle-size {small,medium,large}] [--top-text] [--no-intro] [--fullscreen]
 
     # YouTube URL
     python run_clipping_workflow.py <YouTube-URL> [TOP_N]
-        [--subtitles] [--top-text] [--no-intro] [--fullscreen]
+        [--subtitles] [--subtitle-position {top,middle,bottom}]
+        [--subtitle-size {small,medium,large}] [--top-text] [--no-intro] [--fullscreen]
 
 Optional feature flags
 ----------------------
     --subtitles    Burn auto-generated subtitles onto each clip.
                    For YouTube URLs, subtitles are built from the already-fetched
                    captions (no Whisper).  For local videos, Whisper is used as
-                   a fallback.
+                   a fallback.  The spoken word is highlighted in sync with the
+                   captions (approximate per-word timing).
+    --subtitle-position {top,middle,bottom}
+                   Vertical placement of the captions (default: bottom).
+    --subtitle-size {small,medium,large}
+                   Caption font-size preset (default: medium).
     --top-text     Overlay the LLM hook text at the top of each clip
     --no-intro     Skip the title-card intro prepended by IntroAttachNode
     --fullscreen   Clip at the video's native resolution (no 9:16 reframing).
@@ -30,7 +37,7 @@ Defaults
     VIDEO_PATH  = assets/ailover.mp4
     TOP_N       = 3
     intro       = ON   (disable with --no-intro)
-    subtitles   = OFF  (enable with --subtitles)
+    subtitles   = OFF  (enable with --subtitles; pos=bottom, size=medium)
     top-text    = OFF  (enable with --top-text)
     clip-mode   = portrait 9:16  (switch to native res with --fullscreen)
 
@@ -330,6 +337,8 @@ def run_pipeline(
     add_top_text: bool = False,
     add_intro: bool = True,
     clip_mode: str = "portrait",
+    subtitle_position: str = "bottom",
+    subtitle_size: str = "medium",
     timed_transcript: list | None = None,
 ) -> dict:
     from agents.long_to_shorts import long_to_shorts_app
@@ -342,6 +351,8 @@ def run_pipeline(
     info(f"Options      : intro={'ON' if add_intro else 'OFF'}  "
          f"top-text={'ON' if add_top_text else 'OFF'}  "
          f"subtitles={'ON' if add_subtitles else 'OFF'}")
+    if add_subtitles:
+        info(f"Subtitle sty : position={subtitle_position}  size={subtitle_size}")
     if timed_transcript:
         info(f"Timed segs   : {len(timed_transcript)} (subtitles will skip Whisper)")
     print()
@@ -350,6 +361,8 @@ def run_pipeline(
     os.environ["ADD_INTRO"]      = "1" if add_intro      else "0"
     os.environ["ADD_TOP_TEXT"]   = "1" if add_top_text   else "0"
     os.environ["ADD_SUBTITLES"]  = "1" if add_subtitles  else "0"
+    os.environ["SUBTITLES_POSITION"] = subtitle_position
+    os.environ["SUBTITLES_SIZE"]     = subtitle_size
 
     initial_state = {
         "source_video_path": str(Path(video_path).resolve()),
@@ -357,6 +370,8 @@ def run_pipeline(
         "top_n_clips":       top_n,
         "add_top_text":      add_top_text,
         "add_subtitles":     add_subtitles,
+        "subtitle_position": subtitle_position,
+        "subtitle_size":     subtitle_size,
         "add_intro":         add_intro,
         "clip_mode":         clip_mode,
         "timed_transcript":  timed_transcript or [],
@@ -474,6 +489,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--subtitle-position",
+        choices=["top", "middle", "bottom"],
+        default="bottom",
+        dest="subtitle_position",
+        help="Vertical placement of burned subtitles (default: bottom). Only used with --subtitles.",
+    )
+    parser.add_argument(
+        "--subtitle-size",
+        choices=["small", "medium", "large"],
+        default="medium",
+        dest="subtitle_size",
+        help="Font size preset for burned subtitles (default: medium). Only used with --subtitles.",
+    )
+    parser.add_argument(
         "--top-text",
         action="store_true",
         default=False,
@@ -509,6 +538,8 @@ def main():
     add_subtitles = args.subtitles
     add_top_text  = args.top_text
     clip_mode     = "fullscreen" if args.fullscreen else "portrait"
+    subtitle_position = args.subtitle_position
+    subtitle_size     = args.subtitle_size
 
     first_arg = args.source
 
@@ -530,7 +561,8 @@ def main():
         print(f"  Clip mode : {clip_mode}")
         print(f"  Intro     : {'ON' if add_intro else 'OFF'}")
         print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
-        print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}")
+        print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}"
+              + (f"  (pos={subtitle_position}, size={subtitle_size})" if add_subtitles else ""))
         print(SEP)
 
         try:
@@ -546,6 +578,8 @@ def main():
                 add_top_text=add_top_text,
                 add_intro=add_intro,
                 clip_mode=clip_mode,
+                subtitle_position=subtitle_position,
+                subtitle_size=subtitle_size,
                 timed_transcript=timed_segments,
             )
             print_results(final_state)
@@ -581,7 +615,8 @@ def main():
         print(f"  Clip mode : {clip_mode}")
         print(f"  Intro     : {'ON' if add_intro else 'OFF'}")
         print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
-        print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}")
+        print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}"
+              + (f"  (pos={subtitle_position}, size={subtitle_size})" if add_subtitles else ""))
         print(SEP)
 
         try:
@@ -594,6 +629,8 @@ def main():
                 add_top_text=add_top_text,
                 add_intro=add_intro,
                 clip_mode=clip_mode,
+                subtitle_position=subtitle_position,
+                subtitle_size=subtitle_size,
                 timed_transcript=None,  # local path: no timed captions
             )
             print_results(final_state)

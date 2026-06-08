@@ -109,6 +109,8 @@ def run_job(job_id: str, request: "JobRequest") -> None:
         os.environ["ADD_INTRO"]     = "1" if request.add_intro     else "0"
         os.environ["ADD_TOP_TEXT"]  = "1" if request.add_top_text  else "0"
         os.environ["ADD_SUBTITLES"] = "1" if request.add_subtitles else "0"
+        os.environ["SUBTITLES_POSITION"] = request.subtitle_position
+        os.environ["SUBTITLES_SIZE"]     = request.subtitle_size
 
         # ----------------------------------------------------------------
         # Phase 3: Build initial state and invoke LangGraph pipeline
@@ -123,6 +125,8 @@ def run_job(job_id: str, request: "JobRequest") -> None:
             "top_n_clips":       request.top_n,
             "add_top_text":      request.add_top_text,
             "add_subtitles":     request.add_subtitles,
+            "subtitle_position": request.subtitle_position,
+            "subtitle_size":     request.subtitle_size,
             "add_intro":         request.add_intro,
             "clip_mode":         request.clip_mode,
             "timed_transcript":  timed_segments,

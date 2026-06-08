@@ -57,6 +57,14 @@ class JobRequest(BaseModel):
     # --- Pipeline options ---
     top_n: int = Field(default=3, ge=1, le=20, description="Max number of clips to extract.")
     add_subtitles: bool = Field(default=False, description="Burn subtitles into each clip.")
+    subtitle_position: Literal["top", "middle", "bottom"] = Field(
+        default="bottom",
+        description="Vertical placement of burned subtitles (only used when add_subtitles).",
+    )
+    subtitle_size: Literal["small", "medium", "large"] = Field(
+        default="medium",
+        description="Font size preset for burned subtitles (only used when add_subtitles).",
+    )
     add_top_text: bool = Field(default=False, description="Overlay hook text at top of each clip.")
     add_intro: bool = Field(default=True, description="Prepend title-card intro (IntroAttachNode).")
     clip_mode: Literal["portrait", "fullscreen"] = Field(

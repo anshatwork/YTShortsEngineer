@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useSubmitJob } from "@/hooks/useSubmitJob";
 import { isValidYouTubeUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import type { ClipMode, JobRequest } from "@/types/api";
+import type { ClipMode, JobRequest, SubtitlePosition, SubtitleSize } from "@/types/api";
 
 type Status = "idle" | "typing" | "invalid" | "submitting";
 
@@ -20,6 +20,8 @@ export function CommandBar() {
   const [addIntro, setAddIntro] = useState(true);
   const [addTopText, setAddTopText] = useState(false);
   const [addSubtitles, setAddSubtitles] = useState(false);
+  const [subtitlePosition, setSubtitlePosition] = useState<SubtitlePosition>("bottom");
+  const [subtitleSize, setSubtitleSize] = useState<SubtitleSize>("medium");
 
   const { mutate, isPending } = useSubmitJob();
 
@@ -40,6 +42,8 @@ export function CommandBar() {
       top_n: topN,
       clip_mode: clipMode,
       add_subtitles: addSubtitles,
+      subtitle_position: subtitlePosition,
+      subtitle_size: subtitleSize,
       add_top_text: addTopText,
       add_intro: addIntro,
     };
@@ -100,6 +104,7 @@ export function CommandBar() {
         />
 
         <Segmented
+          label="FRAME"
           options={[
             { value: "portrait", label: "9:16" },
             { value: "fullscreen", label: "NATIVE" },
@@ -127,6 +132,34 @@ export function CommandBar() {
           onChange={setAddSubtitles}
           disabled={isPending}
         />
+
+        {/* Subtitle placement/size — only relevant when captions are on */}
+        {addSubtitles && (
+          <>
+            <Segmented
+              label="POS"
+              options={[
+                { value: "top", label: "TOP" },
+                { value: "middle", label: "MID" },
+                { value: "bottom", label: "BOT" },
+              ]}
+              value={subtitlePosition}
+              onChange={setSubtitlePosition}
+              disabled={isPending}
+            />
+            <Segmented
+              label="SIZE"
+              options={[
+                { value: "small", label: "S" },
+                { value: "medium", label: "M" },
+                { value: "large", label: "L" },
+              ]}
+              value={subtitleSize}
+              onChange={setSubtitleSize}
+              disabled={isPending}
+            />
+          </>
+        )}
       </div>
     </section>
   );
@@ -197,11 +230,13 @@ function Stepper({
 }
 
 function Segmented<T extends string>({
+  label,
   options,
   value,
   onChange,
   disabled,
 }: {
+  label: string;
   options: { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
@@ -209,7 +244,7 @@ function Segmented<T extends string>({
 }) {
   return (
     <div className="flex items-center px-4 py-2.5 gap-3 text-ink">
-      <span className="text-ink-muted">FRAME</span>
+      <span className="text-ink-muted">{label}</span>
       <div className="flex border border-ink">
         {options.map((o) => {
           const active = o.value === value;

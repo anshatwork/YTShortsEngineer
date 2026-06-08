@@ -17,22 +17,37 @@ Subtitle source (in priority order)
 For every clip in generated_clips:
   1.  Obtains per-clip subtitle segments (see above).
   2.  Writes a temporary .srt file.
-  3.  Burns the subtitles into the video using ffmpeg's ``subtitles`` filter
-      with a YouTube-standard style (bottom-centre, white text, dark outline).
+  3.  Burns the subtitles into the video using ffmpeg's ``ass`` filter from a
+      generated ASS file. The ASS file sets PlayResX/PlayResY to the clip's
+      real resolution (so font sizes map to real pixels) and emits per-word
+      Dialogue events that highlight the word currently being spoken.
   4.  Writes the result to  <OUTPUT_DIR>/clips/<clip_id>_sub.mp4  and
       updates clip["path"] to the new path.
-  5.  Cleans up the temporary .srt file.
+  5.  Cleans up the temporary .ass file.
 
 Clips without a valid path are skipped unchanged.
 
-Configuration via environment variables (all optional):
+Sizing note
+-----------
+We render from a generated ASS file with ``PlayResX``/``PlayResY`` set to the
+clip's actual dimensions. This is deliberate: the older ``subtitles=...:
+force_style=...`` path gave libass *no* script resolution, so it assumed its
+default 384×288 canvas and upscaled — turning FontSize=40 into ~14% of the
+frame height (≈265px on a 1920 frame, "the whole screen"). With PlayResY = real
+height, FontSize is in real pixels.
+
+Configuration via environment variables (all optional; per-job state overrides
+these where available — see ``_subtitles_impl``):
     ADD_SUBTITLES              – "1"/"true" to enable (default: disabled)
     SUBTITLES_WHISPER_MODEL    – Whisper model size (default: "base")
-    SUBTITLES_FONT_SIZE        – integer, subtitle font size (default: 40)
+    SUBTITLES_POSITION         – top | middle | bottom (default: bottom)
+    SUBTITLES_SIZE             – small | medium | large (default: medium)
+    SUBTITLES_FONT_NAME        – font face (default: Arial)
     SUBTITLES_FONT_COLOR       – ASS hex color for primary text (default: &HFFFFFF – white)
     SUBTITLES_OUTLINE_COLOR    – ASS hex color for outline (default: &H000000 – black)
     SUBTITLES_OUTLINE_WIDTH    – integer, outline width in pixels (default: 2)
-    SUBTITLES_MAX_CHARS_LINE   – max chars per subtitle line (default: 42)
+    SUBTITLES_HIGHLIGHT        – "1"/"true" to highlight the spoken word (default: on)
+    SUBTITLES_HIGHLIGHT_COLOR  – ASS hex color for the active word (default: &H00FFFF – yellow)
 """
 
 import logging
@@ -58,11 +73,11 @@ _WHISPER_MODEL: str    = os.getenv("SUBTITLES_WHISPER_MODEL", "base")
 # FontName is REQUIRED for libass to resolve a face on Windows. Without it the
 # subtitles filter silently renders nothing (ffmpeg still exits 0).
 _FONT_NAME: str        = os.getenv("SUBTITLES_FONT_NAME", "Arial")
-_FONT_SIZE: int        = int(os.getenv("SUBTITLES_FONT_SIZE", "40"))
 _FONT_COLOR: str       = os.getenv("SUBTITLES_FONT_COLOR", "&HFFFFFF")
 _OUTLINE_COLOR: str    = os.getenv("SUBTITLES_OUTLINE_COLOR", "&H000000")
 _OUTLINE_WIDTH: int    = int(os.getenv("SUBTITLES_OUTLINE_WIDTH", "2"))
-_MAX_CHARS_LINE: int   = int(os.getenv("SUBTITLES_MAX_CHARS_LINE", "42"))
+_HIGHLIGHT_COLOR: str  = os.getenv("SUBTITLES_HIGHLIGHT_COLOR", "&H00FFFF")  # ASS BGR → yellow
+_HIGHLIGHT_ENABLED: bool = os.getenv("SUBTITLES_HIGHLIGHT", "1").strip().lower() in ("1", "true", "yes")
 _MAX_WORKERS: int      = 2   # Whisper is CPU-heavy; limit parallelism
 
 _FPS: int             = 60
@@ -71,70 +86,186 @@ _AUDIO_CODEC: str     = "aac"
 _VIDEO_BITRATE: str   = "8000k"
 _AUDIO_BITRATE: str   = "192k"
 
+# --- Position & size mapping ------------------------------------------------
+# Position → ASS V4+ Style "Alignment" (numpad layout, centre column):
+#   bottom → 2, middle → 5, top → 8.  MarginV is the gap from the top/bottom
+# edge (ignored by libass for vertically-centred alignments).
+_POSITION_ALIGNMENT: Dict[str, int] = {"bottom": 2, "middle": 5, "top": 8}
+_POSITION_MARGIN_V:  Dict[str, int] = {"bottom": 80, "middle": 0, "top": 80}
+_DEFAULT_POSITION = "bottom"
+
+# Size → FontSize as a fraction of PlayResY (resolution-independent). On a
+# 1920-tall portrait frame these resolve to ≈67 / 86 / 111 px.
+_SIZE_FACTOR: Dict[str, float] = {"small": 0.035, "medium": 0.045, "large": 0.058}
+_DEFAULT_SIZE = "medium"
+
 
 # ---------------------------------------------------------------------------
-# SRT helpers
+# ASS helpers
 # ---------------------------------------------------------------------------
 
-def _seconds_to_srt_ts(seconds: float) -> str:
-    """Convert a float seconds value to SRT timestamp format HH:MM:SS,mmm."""
+def _seconds_to_ass_ts(seconds: float) -> str:
+    """Convert a float seconds value to ASS timestamp format H:MM:SS.cc."""
     seconds = max(0.0, seconds)
     hours   = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs    = int(seconds % 60)
-    millis  = int(round((seconds - int(seconds)) * 1000))
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+    centis  = int(round((seconds - int(seconds)) * 100))
+    if centis == 100:        # rounding can push us to the next second
+        centis = 0
+        secs += 1
+    return f"{hours:d}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 
-def _wrap_subtitle_line(text: str, max_chars: int = _MAX_CHARS_LINE) -> str:
+def _ass_escape(text: str) -> str:
+    """Escape characters that have special meaning inside an ASS event body."""
+    # Braces start override blocks; backslash starts escapes — neutralise both
+    # so caption text never accidentally turns into formatting tags.
+    return (
+        text.replace("\\", "\\\\")
+            .replace("{", "(")
+            .replace("}", ")")
+    )
+
+
+def _approx_word_timings(text: str, start: float, end: float):
     """
-    Insert a single newline into *text* if it exceeds *max_chars*, splitting
-    at the nearest word boundary near the middle.  Returns the text unchanged
-    if it is already short enough.
+    Approximate per-word [start, end] windows within a segment by distributing
+    the segment's duration across its words proportional to word length.
+
+    Returns a list of (word, w_start, w_end) tuples. Word timing from YouTube
+    captions / parsed SRT is only segment-level, so this gives a "good enough"
+    karaoke sync without per-word transcription.
     """
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-
-    mid = len(text) // 2
-    # Search for a space near the middle to split on
-    left  = text.rfind(" ", 0, mid)
-    right = text.find(" ", mid)
-
-    if left == -1 and right == -1:
-        return text  # no spaces — can't wrap
-
-    if left == -1:
-        split_at = right
-    elif right == -1:
-        split_at = left
-    else:
-        split_at = left if (mid - left) <= (right - mid) else right
-
-    return text[:split_at] + "\n" + text[split_at + 1:]
+    words = text.split()
+    if not words:
+        return []
+    total_chars = sum(len(w) for w in words)
+    duration = max(end - start, 0.0)
+    out = []
+    t = start
+    for w in words:
+        share = (len(w) / total_chars) if total_chars else (1.0 / len(words))
+        w_end = t + duration * share
+        out.append((w, t, w_end))
+        t = w_end
+    # Pin the final word's end to the segment end to absorb rounding drift.
+    if out:
+        last_w, last_s, _ = out[-1]
+        out[-1] = (last_w, last_s, end)
+    return out
 
 
-def _build_srt(segments: List[Dict]) -> str:
+def _build_ass(
+    segments: List[Dict],
+    play_res_w: int,
+    play_res_h: int,
+    font_size: int,
+    alignment: int,
+    margin_v: int,
+) -> str:
     """
-    Convert a list of segment dicts into a valid SRT string.
+    Build a full ASS subtitle document from segment dicts.
 
-    Accepted formats:
-      • Whisper output — each dict has keys "start", "end", "text"
-      • YouTube captions — each dict has keys "start", "duration", "text"
-        ("end" is derived as start + duration)
+    Accepted segment formats (same as before):
+      • Whisper output — keys "start", "end", "text"
+      • YouTube captions — keys "start", "duration", "text" (end = start+duration)
+
+    Segments are first sorted and *de-overlapped* (each segment's end is clamped
+    to the next segment's start) — YouTube captions routinely overlap, which
+    would otherwise stack two lines / two highlights on screen at once.
+
+    When highlighting is enabled each segment produces:
+      • one persistent **base** event (layer 0) showing the whole line in the
+        normal colour for the full segment, so the line never flickers; and
+      • one **highlight** event per word (layer 1) showing the whole line with
+        the active word recoloured via ``{\\c<HILITE>}word{\\r}``.
+
+    The highlight events are made strictly non-overlapping (each ends one
+    centisecond before the next word starts). This is the key fix for the
+    "two words highlighted" artefact: libass renders event end times
+    *inclusively*, so contiguous events would both be live on the boundary
+    frame and paint two different highlighted words over the same line.
     """
-    lines: List[str] = []
-    for i, seg in enumerate(segments, start=1):
-        start = float(seg["start"])
-        if "end" in seg:
-            end = float(seg["end"])
-        else:
-            end = start + float(seg.get("duration", 2.0))
-        text = _wrap_subtitle_line(seg["text"].strip())
-        start_ts = _seconds_to_srt_ts(start)
-        end_ts   = _seconds_to_srt_ts(end)
-        lines.append(f"{i}\n{start_ts} --> {end_ts}\n{text}\n")
-    return "\n".join(lines)
+    margin_lr = max(int(play_res_w * 0.06), 20)  # keep lines off the edges
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "WrapStyle: 0\n"             # libass smart auto-wrap — no manual \\N needed
+        "ScaledBorderAndShadow: yes\n"
+        f"PlayResX: {play_res_w}\n"
+        f"PlayResY: {play_res_h}\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{_FONT_NAME},{font_size},{_FONT_COLOR},&H000000FF,"
+        f"{_OUTLINE_COLOR},&H64000000,-1,0,0,0,100,100,0,0,1,"
+        f"{_OUTLINE_WIDTH},0,{alignment},{margin_lr},{margin_lr},{margin_v},1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+    )
+
+    events: List[str] = []
+
+    def _dialogue(layer: int, start: float, end: float, body: str) -> str:
+        return (
+            f"Dialogue: {layer},{_seconds_to_ass_ts(start)},{_seconds_to_ass_ts(end)},"
+            f"Default,,0,0,0,,{body}\n"
+        )
+
+    # --- Normalise: drop empties, sort by start, clamp out overlaps ----------
+    norm: List[Dict[str, float]] = []
+    raw = sorted(
+        (
+            {
+                "text": (s.get("text") or "").strip(),
+                "start": float(s["start"]),
+                "end": float(s["end"]) if "end" in s
+                       else float(s["start"]) + float(s.get("duration", 2.0)),
+            }
+            for s in segments
+            if (s.get("text") or "").strip()
+        ),
+        key=lambda s: s["start"],
+    )
+    for i, s in enumerate(raw):
+        end = s["end"]
+        if i + 1 < len(raw):
+            end = min(end, raw[i + 1]["start"])  # de-overlap with next caption
+        if end > s["start"]:
+            norm.append({**s, "end": end})
+
+    _HL_GAP = 0.01  # 1 centisecond — separates consecutive highlight events
+
+    for seg in norm:
+        start, end, text = seg["start"], seg["end"], seg["text"]
+
+        if not _HIGHLIGHT_ENABLED:
+            events.append(_dialogue(0, start, end, _ass_escape(text)))
+            continue
+
+        # Base layer: full line, normal colour, always on for the whole segment.
+        events.append(_dialogue(0, start, end, _ass_escape(text)))
+
+        # Highlight layer: one non-overlapping event per word.
+        words = _approx_word_timings(text, start, end)
+        for idx, (_, w_start, w_end) in enumerate(words):
+            hl_end = w_end - _HL_GAP
+            if hl_end <= w_start:        # ultra-short word — keep it visible
+                hl_end = w_end
+            parts = []
+            for j, (wj, _, _) in enumerate(words):
+                tok = _ass_escape(wj)
+                parts.append(f"{{\\c{_HIGHLIGHT_COLOR}}}{tok}{{\\r}}" if j == idx else tok)
+            events.append(_dialogue(1, w_start, hl_end, " ".join(parts)))
+
+    return header + "".join(events)
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +316,8 @@ def _burn_subtitles(
     clip: ClipObject,
     clips_dir: Path,
     timed_segments: Optional[List[Dict[str, Any]]],
+    position: str = _DEFAULT_POSITION,
+    size: str = _DEFAULT_SIZE,
 ) -> ClipObject:
     """
     Obtain subtitle segments and burn them into *clip*.
@@ -192,6 +325,9 @@ def _burn_subtitles(
     If *timed_segments* is provided (YouTube captions already in state), the
     global segments are sliced to the clip's time window — **no Whisper**.
     Otherwise Whisper is loaded and run on the clip file as a fallback.
+
+    *position* (top|middle|bottom) and *size* (small|medium|large) drive the
+    generated ASS Style alignment/margins and font size.
 
     Returns updated ClipObject with path pointing to *_sub.mp4.
     On failure, returns original clip unchanged.
@@ -244,61 +380,66 @@ def _burn_subtitles(
                 return updated
 
         # ------------------------------------------------------------------
-        # Write SRT
+        # Probe the clip once: read dimensions (for ASS PlayResX/Y, which
+        # makes FontSize map to real pixels) and detect an audio stream.
         # ------------------------------------------------------------------
-        srt_content = _build_srt(segments)
+        main_abs = os.path.abspath(main_path)
+        out_abs  = os.path.abspath(out_path)
+
+        probe = ffmpeg.probe(main_abs)
+        streams = probe["streams"]
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+        video_stream = next(
+            (s for s in streams if s.get("codec_type") == "video"), None
+        )
+        play_res_w = int(video_stream["width"]) if video_stream else 1080
+        play_res_h = int(video_stream["height"]) if video_stream else 1920
+
+        # Resolve position/size → ASS Style parameters.
+        alignment = _POSITION_ALIGNMENT.get(position, _POSITION_ALIGNMENT[_DEFAULT_POSITION])
+        margin_v  = _POSITION_MARGIN_V.get(position, _POSITION_MARGIN_V[_DEFAULT_POSITION])
+        factor    = _SIZE_FACTOR.get(size, _SIZE_FACTOR[_DEFAULT_SIZE])
+        font_size = max(round(play_res_h * factor), 12)
+
+        # ------------------------------------------------------------------
+        # Write ASS
+        # ------------------------------------------------------------------
+        ass_content = _build_ass(
+            segments, play_res_w, play_res_h, font_size, alignment, margin_v
+        )
 
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".srt", delete=False, encoding="utf-8"
-        ) as srt_file:
-            srt_file.write(srt_content)
-            srt_path = srt_file.name
+            mode="w", suffix=".ass", delete=False, encoding="utf-8"
+        ) as ass_file:
+            ass_file.write(ass_content)
+            srt_path = ass_file.name  # name reused by the cleanup block below
 
-        logger.debug(f"  {clip_id}: SRT written to {srt_path} ({len(segments)} entries)")
+        logger.debug(
+            f"  {clip_id}: ASS written to {srt_path} "
+            f"({len(segments)} segments, {play_res_w}x{play_res_h}, "
+            f"font={font_size}, align={alignment}, pos={position}, size={size})"
+        )
 
         # ------------------------------------------------------------------
         # Burn subtitles via ffmpeg  (subprocess — bypasses ffmpeg-python's
         # filter-value backslash-escaping which corrupts Windows paths)
         # ------------------------------------------------------------------
-        force_style = (
-            f"FontName={_FONT_NAME},"
-            f"FontSize={_FONT_SIZE},"
-            f"PrimaryColour={_FONT_COLOR},"
-            f"OutlineColour={_OUTLINE_COLOR},"
-            f"Outline={_OUTLINE_WIDTH},"
-            f"Alignment=2,"
-            f"MarginV=60"
-        )
-
-        # Windows-safe subtitles path handling.  The ffmpeg subtitles filter
+        # Windows-safe subtitle path handling.  The ffmpeg ass/subtitles filter
         # path is a minefield of escaping: a drive-letter colon (C:) is split
         # by the filtergraph parser (two passes), so even an escaped "\:"
         # survives pass 1 only to be re-split in pass 2 — ffmpeg then reads the
-        # tail as the filter's 2nd positional arg (original_size) and errors
-        # with "Unable to parse option value ... as image size".
+        # tail as the filter's 2nd positional arg and errors out.
         #
-        # We sidestep the whole problem: run ffmpeg with cwd set to the SRT's
-        # directory and reference it by *bare filename* (e.g. tmpXXXX.srt) —
+        # We sidestep the whole problem: run ffmpeg with cwd set to the ASS's
+        # directory and reference it by *bare filename* (e.g. tmpXXXX.ass) —
         # no colon, no backslash, nothing to escape.  Because cwd changes, the
         # input/output must be absolute.  cwd= is per-subprocess and
         # thread-safe (unlike os.chdir), so it's safe in the ThreadPoolExecutor.
-        main_abs = os.path.abspath(main_path)
-        out_abs  = os.path.abspath(out_path)
         srt_dir  = os.path.dirname(os.path.abspath(srt_path))
         srt_name = os.path.basename(srt_path)
 
-        # force_style contains commas (FontSize=40,PrimaryColour=...).  In an
-        # ffmpeg filtergraph a comma separates *filters*, so the value must be
-        # wrapped in single quotes to protect its commas — otherwise ffmpeg
-        # reads "OutlineColour=..." as a new (invalid) filter.  Because we run
-        # ffmpeg via subprocess with an args list (no shell), these single
-        # quotes reach ffmpeg verbatim and act as filtergraph quoting.
-        filter_str = f"subtitles={srt_name}:force_style='{force_style}'"
-
-        has_audio = any(
-            s.get("codec_type") == "audio"
-            for s in ffmpeg.probe(main_abs)["streams"]
-        )
+        # All styling lives in the ASS file, so the filter is just `ass=<file>`.
+        filter_str = f"ass={srt_name}"
 
         cmd: List[str] = [
             "ffmpeg", "-y",
@@ -359,7 +500,7 @@ def _burn_subtitles(
     except Exception as exc:
         logger.error(f"  ✗ {clip_id}: unexpected error in SubtitlesNode – {exc}")
     finally:
-        # Clean up temp SRT file
+        # Clean up temp ASS file (variable named srt_path for historical reasons)
         try:
             if "srt_path" in dir() and Path(srt_path).exists():
                 os.remove(srt_path)
@@ -388,6 +529,8 @@ def subtitles_node(state: LongToShortsState) -> Dict[str, Any]:
     Input state keys used:
         generated_clips    – List[ClipObject] from TopTextNode / ContentGenNode
         add_subtitles      – boolean feature flag (optional, overridden by env var)
+        subtitle_position  – top|middle|bottom (optional; env SUBTITLES_POSITION)
+        subtitle_size      – small|medium|large (optional; env SUBTITLES_SIZE)
         timed_transcript   – optional list of timed caption dicts from YouTube
 
     Output state keys:
@@ -417,6 +560,12 @@ def _subtitles_impl(state: LongToShortsState) -> Dict[str, Any]:
         logger.warning("SubtitlesNode: no clips to process.")
         return {"generated_clips": [], "current_step": "subtitles_skipped"}
 
+    # Resolve position/size: per-job state first, env var fallback, then default.
+    position = state.get("subtitle_position") or os.getenv("SUBTITLES_POSITION") or _DEFAULT_POSITION
+    size     = state.get("subtitle_size") or os.getenv("SUBTITLES_SIZE") or _DEFAULT_SIZE
+    position = position if position in _POSITION_ALIGNMENT else _DEFAULT_POSITION
+    size     = size if size in _SIZE_FACTOR else _DEFAULT_SIZE
+
     # Prefer the per-run clips_dir set by ClippingLogicNode; fall back to the
     # legacy flat layout only when this node runs in isolation.
     clips_dir = state.get("clips_dir")
@@ -426,22 +575,25 @@ def _subtitles_impl(state: LongToShortsState) -> Dict[str, Any]:
     # Retrieve timed transcript from state (may be None for local video paths)
     timed_segments: Optional[List[Dict[str, Any]]] = state.get("timed_transcript")
 
+    style_note = f"pos={position}, size={size}, highlight={'on' if _HIGHLIGHT_ENABLED else 'off'}"
     if timed_segments:
         logger.info(
             f"SubtitlesNode: burning subtitles into {len(clips)} clip(s) "
-            f"using YouTube captions ({len(timed_segments)} segments, no Whisper)"
+            f"using YouTube captions ({len(timed_segments)} segments, no Whisper) [{style_note}]"
         )
     else:
         logger.info(
             f"SubtitlesNode: burning subtitles into {len(clips)} clip(s) "
-            f"using Whisper fallback (whisper={_WHISPER_MODEL})"
+            f"using Whisper fallback (whisper={_WHISPER_MODEL}) [{style_note}]"
         )
 
     results: List[Optional[ClipObject]] = [None] * len(clips)
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         future_to_idx = {
-            executor.submit(_burn_subtitles, clip, output_dir, timed_segments): idx
+            executor.submit(
+                _burn_subtitles, clip, output_dir, timed_segments, position, size
+            ): idx
             for idx, clip in enumerate(clips)
         }
         for future in as_completed(future_to_idx):

@@ -5,7 +5,7 @@ import { useSubmitJob } from "@/hooks/useSubmitJob";
 import { useUploadAsset } from "@/hooks/useEditJob";
 import { isValidYouTubeUrl, cn } from "@/lib/utils";
 import { ConfigPanel } from "./ConfigPanel";
-import type { JobRequest, ClipMode } from "@/types/api";
+import type { JobRequest, ClipMode, SubtitlePosition, SubtitleSize } from "@/types/api";
 
 type Source = "youtube" | "local";
 
@@ -29,6 +29,8 @@ export function JobForm() {
   const [topN, setTopN] = useState(3);
   const [clipMode, setClipMode] = useState<ClipMode>("portrait");
   const [addSubtitles, setAddSubtitles] = useState(false);
+  const [subtitlePosition, setSubtitlePosition] = useState<SubtitlePosition>("bottom");
+  const [subtitleSize, setSubtitleSize] = useState<SubtitleSize>("medium");
   const [addTopText, setAddTopText] = useState(false);
   const [addIntro, setAddIntro] = useState(true);
 
@@ -82,6 +84,8 @@ export function JobForm() {
       top_n: topN,
       clip_mode: clipMode,
       add_subtitles: addSubtitles,
+      subtitle_position: subtitlePosition,
+      subtitle_size: subtitleSize,
       add_top_text: addTopText,
       add_intro: addIntro,
     };
@@ -253,6 +257,8 @@ export function JobForm() {
           topN={topN} setTopN={setTopN}
           clipMode={clipMode} setClipMode={setClipMode}
           addSubtitles={addSubtitles} setAddSubtitles={setAddSubtitles}
+          subtitlePosition={subtitlePosition} setSubtitlePosition={setSubtitlePosition}
+          subtitleSize={subtitleSize} setSubtitleSize={setSubtitleSize}
           addTopText={addTopText} setAddTopText={setAddTopText}
           addIntro={addIntro} setAddIntro={setAddIntro}
           disabled={busy}

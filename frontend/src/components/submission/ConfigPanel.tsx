@@ -1,12 +1,14 @@
 "use client";
 
-import type { ClipMode } from "@/types/api";
+import type { ClipMode, SubtitlePosition, SubtitleSize } from "@/types/api";
 import { cn } from "@/lib/utils";
 
 interface ConfigPanelProps {
   topN: number; setTopN: (v: number) => void;
   clipMode: ClipMode; setClipMode: (v: ClipMode) => void;
   addSubtitles: boolean; setAddSubtitles: (v: boolean) => void;
+  subtitlePosition: SubtitlePosition; setSubtitlePosition: (v: SubtitlePosition) => void;
+  subtitleSize: SubtitleSize; setSubtitleSize: (v: SubtitleSize) => void;
   addTopText: boolean; setAddTopText: (v: boolean) => void;
   addIntro: boolean; setAddIntro: (v: boolean) => void;
   disabled?: boolean;
@@ -21,6 +23,8 @@ export function ConfigPanel({
   topN, setTopN,
   clipMode, setClipMode,
   addSubtitles, setAddSubtitles,
+  subtitlePosition, setSubtitlePosition,
+  subtitleSize, setSubtitleSize,
   addTopText, setAddTopText,
   addIntro, setAddIntro,
   disabled,
@@ -111,9 +115,84 @@ export function ConfigPanel({
         <InkSwitch
           checked={addSubtitles} onChange={setAddSubtitles}
           label="SUBTITLES"
-          hint="Burn captions into the video"
+          hint="Burn captions in, active word highlighted"
           disabled={disabled}
         />
+
+        {/* Subtitle styling — only relevant when captions are on */}
+        {addSubtitles && (
+          <div className="pl-[26px] pt-1 pb-2 space-y-3">
+            <Segmented
+              label="Position"
+              value={subtitlePosition}
+              onChange={setSubtitlePosition}
+              options={[
+                { value: "top", label: "TOP" },
+                { value: "middle", label: "MID" },
+                { value: "bottom", label: "BOT" },
+              ]}
+              disabled={disabled}
+            />
+            <Segmented
+              label="Size"
+              value={subtitleSize}
+              onChange={setSubtitleSize}
+              options={[
+                { value: "small", label: "S" },
+                { value: "medium", label: "M" },
+                { value: "large", label: "L" },
+              ]}
+              disabled={disabled}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Compact 3-up segmented control matching the FRAME selector styling.
+ * Generic over the option value so it stays type-safe for each setter.
+ */
+function Segmented<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+  disabled?: boolean;
+}) {
+  return (
+    <div>
+      <span className="block font-mono text-[10px] tracking-[0.2em] text-ink-muted uppercase mb-1.5">
+        {label}
+      </span>
+      <div className="grid grid-cols-3 border border-ink">
+        {options.map((opt, i) => {
+          const active = value === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(opt.value)}
+              className={cn(
+                "px-2 py-2 font-mono text-[11px] tracking-[0.12em] transition-colors",
+                i !== options.length - 1 && "border-r border-ink",
+                active ? "bg-ink text-paper" : "bg-transparent text-ink hover:bg-paper-2",
+                disabled && "opacity-50 cursor-not-allowed",
+              )}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

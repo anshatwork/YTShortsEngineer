@@ -96,6 +96,10 @@ class LongToShortsState(TypedDict, total=False):
     add_subtitles: bool                 # Burn subtitles into clip (SubtitlesNode)
     add_intro: bool                     # Prepend title-card intro (IntroAttachNode)
 
+    # --- Subtitle styling (SubtitlesNode; only used when add_subtitles) ---
+    subtitle_position: str              # "top" | "middle" | "bottom"  (default "bottom")
+    subtitle_size: str                  # "small" | "medium" | "large"  (default "medium")
+
     # --- Clip mode ---
     # "portrait"   → 9:16 (1080×1920) with letterbox/pillarbox  [default]
     # "fullscreen" → original resolution, no reframing
