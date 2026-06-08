@@ -25,9 +25,11 @@ Usage in agent nodes
     text = response.content
 """
 
+import json
 import logging
 import os
-from typing import Optional
+import urllib.request
+from typing import Optional, Tuple
 
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
@@ -41,7 +43,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_MODEL: str       = "llama3.1:8b"
-_DEFAULT_BASE_URL: str    = "http://localhost:11434"
+_DEFAULT_BASE_URL: str    = "http://127.0.0.1:11434"
 _DEFAULT_TEMPERATURE: float = 0.3
 _DEFAULT_MAX_TOKENS: int  = 512
 
@@ -100,6 +102,38 @@ def get_chat_model(
         temperature=resolved_temp,
         num_predict=resolved_maxt,
     )
+
+
+def check_available(
+    base_url: Optional[str] = None, timeout: float = 3.0
+) -> Tuple[bool, str]:
+    """
+    Probe the Ollama server before relying on it.
+
+    `get_chat_model()` only *constructs* a ChatOllama; it never connects, so a
+    dead daemon or an un-pulled model is only discovered on the first
+    `.invoke()` — which then surfaces as a per-clip failure. This pre-flight
+    check lets callers fail fast with a single clear message.
+
+    Returns:
+        (ok, detail). ok=False means the server is unreachable OR the configured
+        model is not pulled; *detail* is a human-readable reason.
+    """
+    url = (base_url or _base_url()).rstrip("/") + "/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False, f"Ollama returned HTTP {resp.status}"
+            tags = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return False, f"Ollama unreachable at {url} ({exc})"
+
+    names = {m.get("name", "") for m in tags.get("models", [])}
+    want = _model()
+    base_names = {n.split(":")[0] for n in names}
+    if want not in names and want.split(":")[0] not in base_names:
+        return False, f"model '{want}' not pulled (run: ollama pull {want})"
+    return True, "ok"
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ import ffmpeg  # ffmpeg-python — for source duration probe
 
 from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
-from tools.llm.ollama import get_chat_model
+from tools.llm.ollama import check_available, get_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +424,9 @@ def _analyze_video_impl(state: LongToShortsState) -> Dict[str, Any]:
 
     try:
         llm = get_chat_model()
+        ok, detail = check_available()
+        if not ok:
+            raise RuntimeError(detail)
     except Exception as exc:
         logger.warning(f"AnalyzeVideoNode: LLM unavailable ({exc}). Using synthetic fallback.")
         llm_available = False

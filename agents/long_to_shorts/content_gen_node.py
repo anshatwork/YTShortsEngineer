@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
-from tools.llm.ollama import get_chat_model
+from tools.llm.ollama import check_available, get_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +229,9 @@ def _content_gen_impl(state: LongToShortsState) -> Dict[str, Any]:
     llm = None
     try:
         llm = get_chat_model()
+        ok, detail = check_available()
+        if not ok:
+            raise RuntimeError(detail)
     except Exception as exc:
         logger.warning(f"ContentGenNode: LLM unavailable ({exc}). Using placeholder metadata.")
         llm_available = False

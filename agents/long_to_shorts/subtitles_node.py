@@ -270,14 +270,22 @@ def _burn_subtitles(
             f"MarginV=60"
         )
 
-        # Build the subtitles filter path: forward slashes, drive-letter colon
-        # escaped with a single \  (e.g. C\:/Users/...).  Because we use
-        # subprocess with a proper args list (no shell), this one backslash is
-        # delivered verbatim to ffmpeg — no extra escaping layer.
-        srt_abs = os.path.abspath(srt_path)
-        srt_fwd = srt_abs.replace("\\", "/")
-        if len(srt_fwd) >= 2 and srt_fwd[1] == ":":
-            srt_fwd = srt_fwd[0] + "\\:" + srt_fwd[2:]
+        # Windows-safe subtitles path handling.  The ffmpeg subtitles filter
+        # path is a minefield of escaping: a drive-letter colon (C:) is split
+        # by the filtergraph parser (two passes), so even an escaped "\:"
+        # survives pass 1 only to be re-split in pass 2 — ffmpeg then reads the
+        # tail as the filter's 2nd positional arg (original_size) and errors
+        # with "Unable to parse option value ... as image size".
+        #
+        # We sidestep the whole problem: run ffmpeg with cwd set to the SRT's
+        # directory and reference it by *bare filename* (e.g. tmpXXXX.srt) —
+        # no colon, no backslash, nothing to escape.  Because cwd changes, the
+        # input/output must be absolute.  cwd= is per-subprocess and
+        # thread-safe (unlike os.chdir), so it's safe in the ThreadPoolExecutor.
+        main_abs = os.path.abspath(main_path)
+        out_abs  = os.path.abspath(out_path)
+        srt_dir  = os.path.dirname(os.path.abspath(srt_path))
+        srt_name = os.path.basename(srt_path)
 
         # force_style contains commas (FontSize=40,PrimaryColour=...).  In an
         # ffmpeg filtergraph a comma separates *filters*, so the value must be
@@ -285,16 +293,16 @@ def _burn_subtitles(
         # reads "OutlineColour=..." as a new (invalid) filter.  Because we run
         # ffmpeg via subprocess with an args list (no shell), these single
         # quotes reach ffmpeg verbatim and act as filtergraph quoting.
-        filter_str = f"subtitles={srt_fwd}:force_style='{force_style}'"
+        filter_str = f"subtitles={srt_name}:force_style='{force_style}'"
 
         has_audio = any(
             s.get("codec_type") == "audio"
-            for s in ffmpeg.probe(main_path)["streams"]
+            for s in ffmpeg.probe(main_abs)["streams"]
         )
 
         cmd: List[str] = [
             "ffmpeg", "-y",
-            "-i", main_path,
+            "-i", main_abs,
             "-vf", filter_str,
             "-vcodec", _VIDEO_CODEC,
             "-r", str(_FPS),
@@ -304,9 +312,9 @@ def _burn_subtitles(
         ]
         if has_audio:
             cmd += ["-acodec", _AUDIO_CODEC, "-b:a", _AUDIO_BITRATE]
-        cmd.append(out_path)
+        cmd.append(out_abs)
 
-        proc = subprocess.run(cmd, capture_output=True)
+        proc = subprocess.run(cmd, capture_output=True, cwd=srt_dir)
         stderr_txt = proc.stderr.decode("utf-8", errors="replace")
         if proc.returncode != 0:
             raise RuntimeError(
