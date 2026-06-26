@@ -19,3 +19,12 @@ export const PIPELINE_NODES: PipelineNodeName[] = [
 // Polling intervals (ms)
 export const POLL_INTERVAL_RUNNING = 3_000;
 export const POLL_INTERVAL_LIST    = 10_000;
+// Slow safety-net poll used while SSE is the primary update channel. If the
+// event stream drops entirely, state still advances at this cadence.
+export const POLL_INTERVAL_FALLBACK = 30_000;
+
+// Real-time updates via Server-Sent Events. Set NEXT_PUBLIC_SSE_ENABLED=0 to
+// fall back to pure polling (instant rollback, no code change).
+export const SSE_ENABLED = !["0", "false", "off"].includes(
+  (process.env.NEXT_PUBLIC_SSE_ENABLED ?? "1").toLowerCase(),
+);

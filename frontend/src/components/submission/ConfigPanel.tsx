@@ -1,6 +1,6 @@
 "use client";
 
-import type { ClipMode, SubtitlePosition, SubtitleSize } from "@/types/api";
+import type { ClipMode, SubtitlePosition, SubtitleSize, ThumbnailStyle } from "@/types/api";
 import { cn } from "@/lib/utils";
 
 interface ConfigPanelProps {
@@ -10,6 +10,8 @@ interface ConfigPanelProps {
   subtitlePosition: SubtitlePosition; setSubtitlePosition: (v: SubtitlePosition) => void;
   subtitleSize: SubtitleSize; setSubtitleSize: (v: SubtitleSize) => void;
   addTopText: boolean; setAddTopText: (v: boolean) => void;
+  addThumbnail: boolean; setAddThumbnail: (v: boolean) => void;
+  thumbnailStyle: ThumbnailStyle; setThumbnailStyle: (v: ThumbnailStyle) => void;
   addIntro: boolean; setAddIntro: (v: boolean) => void;
   disabled?: boolean;
 }
@@ -26,6 +28,8 @@ export function ConfigPanel({
   subtitlePosition, setSubtitlePosition,
   subtitleSize, setSubtitleSize,
   addTopText, setAddTopText,
+  addThumbnail, setAddThumbnail,
+  thumbnailStyle, setThumbnailStyle,
   addIntro, setAddIntro,
   disabled,
 }: ConfigPanelProps) {
@@ -113,6 +117,31 @@ export function ConfigPanel({
           disabled={disabled}
         />
         <InkSwitch
+          checked={addThumbnail} onChange={setAddThumbnail}
+          label="THUMBNAIL"
+          hint="AI-designed thumbnail per clip"
+          disabled={disabled}
+        />
+
+        {/* Thumbnail caption style — only relevant when thumbnails are on */}
+        {addThumbnail && (
+          <div className="pl-[26px] pt-1 pb-2">
+            <Segmented
+              label="Style"
+              value={thumbnailStyle}
+              onChange={setThumbnailStyle}
+              options={[
+                { value: "auto", label: "AUTO" },
+                { value: "bubble", label: "BUBBLE" },
+                { value: "highlight", label: "HILITE" },
+                { value: "box", label: "BOX" },
+                { value: "plain", label: "PLAIN" },
+              ]}
+              disabled={disabled}
+            />
+          </div>
+        )}
+        <InkSwitch
           checked={addSubtitles} onChange={setAddSubtitles}
           label="SUBTITLES"
           hint="Burn captions in, active word highlighted"
@@ -173,7 +202,10 @@ function Segmented<T extends string>({
       <span className="block font-mono text-[10px] tracking-[0.2em] text-ink-muted uppercase mb-1.5">
         {label}
       </span>
-      <div className="grid grid-cols-3 border border-ink">
+      <div
+        className="grid border border-ink"
+        style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+      >
         {options.map((opt, i) => {
           const active = value === opt.value;
           return (

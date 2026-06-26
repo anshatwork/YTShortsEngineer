@@ -22,15 +22,33 @@ Workflow:
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import ffmpeg  # ffmpeg-python — for source duration probe
+from pydantic import BaseModel
 
 from agents.long_to_shorts._logging_utils import node_stage
 from agents.state import ClipObject, LongToShortsState
-from tools.llm.ollama import check_available, get_chat_model
+from tools.llm import get_llm
 
 logger = logging.getLogger(__name__)
+
+
+class HookSegment(BaseModel):
+    """Structured-output schema for a scored transcript segment."""
+
+    start_time: float
+    end_time: float
+    hook_score: float
+    hook_type: Literal[
+        "curiosity_gap",
+        "surprising_fact",
+        "emotional_story",
+        "controversy",
+        "humor",
+        "how_to",
+    ]
+    reason: str
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -46,13 +64,19 @@ _TARGET_SEGMENT_SECONDS: float = 55.0
 _OVERLAP_SECONDS: float = 10.0
 # Minimum segment duration (seconds). Clips shorter than this are unusable for Shorts.
 MIN_SEGMENT_SECONDS: float = 45.0
+# Bump to invalidate cached hook-scoring completions when the prompt changes.
+# v2: migrated to Claude structured outputs (HookSegment schema) + cached system prompt.
+# v3: creator guidance now leads the user turn with a stronger no-verbatim frame.
+_ANALYZE_LLM_CACHE_VERSION: int = 3
 
 _CHUNK_SIZE: int = int(_TARGET_SEGMENT_SECONDS * _CHARS_PER_SECOND)
 _OVERLAP_SIZE: int = int(_OVERLAP_SECONDS * _CHARS_PER_SECOND)
 
-_ANALYSIS_PROMPT = """\
+# Static instructions — passed as a cached system prompt. The transcript (the only
+# part that varies per chunk) goes in the user turn below.
+_ANALYSIS_SYSTEM = """\
 You are a senior viral content strategist specialising exclusively in YouTube Shorts.
-Your job is to find the single most scroll-stopping segment in a transcript excerpt.
+Find the single most scroll-stopping segment in the transcript excerpt the user provides.
 
 ━━━ HOOK SCORE RUBRIC (1–10) ━━━
 10 – Jaw-dropping opening line + clear story arc + strong emotional payoff
@@ -66,29 +90,22 @@ Your job is to find the single most scroll-stopping segment in a transcript exce
  2 – Rambling or off-topic content
  1 – Purely administrative / completely forgettable
 
-━━━ HOOK TYPE CLASSIFICATION ━━━
-Choose exactly ONE from:
+━━━ HOOK TYPE ━━━
+Pick the single best-fitting hook_type:
   curiosity_gap | surprising_fact | emotional_story | controversy | humor | how_to
 
-━━━ DURATION RULES ━━━
-The segment MUST be 45–75 seconds long (end_time − start_time ≥ 45 and ≤ 75).
-Do NOT pick a single line or a moment — we need a FULL self-contained story arc.
-If the excerpt is shorter than 45 seconds, use the whole excerpt.
+━━━ DURATION ━━━
+The segment should be 45–75 seconds long (end_time − start_time between 45 and 75),
+a full self-contained story arc — not a single line or moment. If the excerpt is
+shorter than 45 seconds, use the whole excerpt. start_time / end_time are offsets in
+seconds relative to the excerpt (0 = excerpt start). hook_score is 1–10, one decimal.
+reason is one sentence explaining the score."""
 
-━━━ OUTPUT FORMAT ━━━
-Return ONLY a valid JSON object — no markdown fences, no commentary — \
-with EXACTLY these keys:
-  "start_time" : float — start offset in seconds relative to this excerpt (0 = excerpt start)
-  "end_time"   : float — end offset in seconds relative to this excerpt (start_time + 45 to 75)
-  "hook_score" : float — your score from 1 to 10 (one decimal place)
-  "hook_type"  : string — one of the six types above
-  "reason"     : string — one sentence explaining WHY this segment scores this high
-
+_ANALYSIS_USER = """\
 Transcript excerpt (starts at {offset_seconds:.1f}s into the video):
 \"\"\"
 {transcript_chunk}
-\"\"\"
-"""
+\"\"\""""
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +331,42 @@ def _parse_llm_json(
     return data
 
 
+def _finalize_segment(
+    seg: HookSegment, offset_seconds: float, chunk_duration_seconds: float | None = None
+) -> Dict[str, Any]:
+    """Convert a validated :class:`HookSegment` into the absolute-time segment dict.
+
+    Adds *offset_seconds* to the excerpt-relative times, clamps hook_score to 1–10,
+    and guarantees ``MIN_SEGMENT_SECONDS`` using the same bidirectional strategy as
+    the legacy ``_parse_llm_json`` (extend end forward; if it overruns the chunk,
+    pull start back).
+    """
+    start = float(seg.start_time) + offset_seconds
+    end = float(seg.end_time) + offset_seconds
+    hook_score = max(1.0, min(10.0, float(seg.hook_score)))
+
+    if end - start < MIN_SEGMENT_SECONDS:
+        original = (start, end)
+        end = start + MIN_SEGMENT_SECONDS
+        if chunk_duration_seconds is not None:
+            chunk_end = offset_seconds + chunk_duration_seconds
+            if end > chunk_end:
+                end = chunk_end
+                start = max(offset_seconds, chunk_end - MIN_SEGMENT_SECONDS)
+        logger.debug(
+            f"Adjusted short segment {original[0]:.1f}s→{original[1]:.1f}s to "
+            f"{start:.1f}s→{end:.1f}s ({end - start:.1f}s)"
+        )
+
+    return {
+        "start_time": start,
+        "end_time": end,
+        "hook_score": hook_score,
+        "hook_type": seg.hook_type,
+        "reason": seg.reason,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helper: fallback synthetic segments
 # ---------------------------------------------------------------------------
@@ -322,26 +375,43 @@ def _make_synthetic_segments(
     transcript: str, top_n: int, max_duration_seconds: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
-    When LLM analysis fails entirely, divide the transcript into evenly-spaced
-    60-second segments so the rest of the pipeline can still run.
+    When LLM analysis fails entirely (or the transcript doesn't line up with the
+    downloaded video), divide the *real* video span into evenly-spaced segments so
+    the rest of the pipeline can still run. Bounded to max_duration_seconds when
+    known. Returns [] only when the source is too short for even one valid clip
+    (< MIN_SEGMENT_SECONDS).
     """
     if max_duration_seconds is not None and max_duration_seconds > 0:
         total_seconds = max_duration_seconds
     else:
         total_seconds = len(transcript) / _CHARS_PER_SECOND
-    segment_len = 60.0
+
+    # Too short to form a single valid clip — genuine failure for the caller.
+    if total_seconds < MIN_SEGMENT_SECONDS:
+        return []
+
+    # Cap the window to the available span so short videos still yield one clip.
+    segment_len = min(60.0, total_seconds)
     segments = []
     t = 0.0
     idx = 0
-    while t + segment_len <= total_seconds and idx < top_n:
+    while t + segment_len <= total_seconds + 1e-6 and idx < top_n:
         segments.append({
             "start_time": t,
-            "end_time": t + segment_len,
+            "end_time": min(t + segment_len, total_seconds),
             "hook_score": 5.0,
             "reason": "synthetic fallback segment",
         })
         t += segment_len * 0.8  # 20 % overlap
         idx += 1
+    # Guarantee at least one whole-span segment (e.g. a 45–60s video).
+    if not segments:
+        segments.append({
+            "start_time": 0.0,
+            "end_time": total_seconds,
+            "hook_score": 5.0,
+            "reason": "synthetic fallback segment",
+        })
     return segments[:top_n]
 
 
@@ -414,35 +484,51 @@ def _analyze_video_impl(state: LongToShortsState) -> Dict[str, Any]:
         logger.info(f"AnalyzeVideoNode: split into {len(chunks)} chunks.")
 
     if not chunks:
-        logger.error("AnalyzeVideoNode: produced 0 chunks (transcript empty or all past video end).")
-        return {"analyzed_segments": [], "current_step": "analysis_failed",
-                "error": "No analysable transcript content within the video duration."}
+        # All caption/text content fell past the downloaded video's real
+        # duration (captions cover a longer/different cut than the stream we
+        # got). Don't hard-fail — fall through with no chunks so the LLM loop
+        # no-ops and the synthetic fallback below rebuilds segments bounded to
+        # the actual video duration.
+        logger.warning(
+            "AnalyzeVideoNode: 0 chunks within the video duration — captions "
+            "appear to cover more/other material than the downloaded file; "
+            "will use synthetic segments bounded to the real duration."
+        )
 
     # --- 3. Collect raw scored segments from LLM
     raw_segments: List[Dict[str, Any]] = []
     llm_available = True
 
     try:
-        llm = get_chat_model()
-        ok, detail = check_available()
-        if not ok:
-            raise RuntimeError(detail)
+        llm = get_llm()
     except Exception as exc:
         logger.warning(f"AnalyzeVideoNode: LLM unavailable ({exc}). Using synthetic fallback.")
         llm_available = False
 
     if llm_available:
+        from agents.long_to_shorts._llm_cache import cached_llm_text
+        from agents.long_to_shorts._prompt_utils import guidance_block
+
+        guidance = guidance_block(state.get("user_context"))
+
         for chunk in chunks:
-            prompt_text = _ANALYSIS_PROMPT.format(
+            user_prompt = guidance + _ANALYSIS_USER.format(
                 offset_seconds=chunk["offset_seconds"],
                 transcript_chunk=chunk["text"],
             )
             try:
-                from langchain_core.messages import HumanMessage
-                response = llm.invoke([HumanMessage(content=prompt_text)])
-                raw_text = response.content if hasattr(response, "content") else str(response)
-                segment = _parse_llm_json(
-                    raw_text,
+                def _invoke() -> str:
+                    seg = llm.parse(user_prompt, HookSegment, system=_ANALYSIS_SYSTEM)
+                    return seg.model_dump_json()
+
+                raw_text = cached_llm_text(
+                    user_prompt,
+                    operation="analyze_llm",
+                    version=_ANALYZE_LLM_CACHE_VERSION,
+                    invoke=_invoke,
+                )
+                segment = _finalize_segment(
+                    HookSegment.model_validate_json(raw_text),
                     chunk["offset_seconds"],
                     chunk_duration_seconds=chunk["duration_seconds"],
                 )
@@ -464,21 +550,18 @@ def _analyze_video_impl(state: LongToShortsState) -> Dict[str, Any]:
     # --- 5. Filter out anything still past the video end (belt-and-braces:
     #        a chunk near the boundary plus the +/- MIN_SEGMENT padding in
     #        _parse_llm_json can still nudge a clip past `video_duration`).
-    if video_duration:
-        before = len(raw_segments)
-        raw_segments = [
-            s for s in raw_segments
-            if s["start_time"] < video_duration
-        ]
-        # Clamp ends that exceed duration but whose start is still inside
-        for s in raw_segments:
+    def _clamp_to_duration(segs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not video_duration:
+            return segs
+        kept = [s for s in segs if s["start_time"] < video_duration]
+        for s in kept:
             if s["end_time"] > video_duration:
                 s["end_time"] = video_duration
-            # Drop anything reduced below the minimum useful clip length
-        raw_segments = [
-            s for s in raw_segments
-            if s["end_time"] - s["start_time"] >= MIN_SEGMENT_SECONDS
-        ]
+        return [s for s in kept if s["end_time"] - s["start_time"] >= MIN_SEGMENT_SECONDS]
+
+    if video_duration:
+        before = len(raw_segments)
+        raw_segments = _clamp_to_duration(raw_segments)
         dropped = before - len(raw_segments)
         if dropped:
             logger.warning(
@@ -486,13 +569,31 @@ def _analyze_video_impl(state: LongToShortsState) -> Dict[str, Any]:
                 f"outside the video duration after LLM scoring."
             )
 
+    # Last resort: every scored segment fell outside the downloaded video
+    # (captions cover a longer/different cut than the stream we got). Rebuild
+    # evenly-spaced segments from the *real* duration so the job still produces
+    # clips instead of hard-failing.
+    if not raw_segments:
+        logger.warning(
+            "AnalyzeVideoNode: all scored segments fell outside the downloaded "
+            "video (%.1fs) — falling back to synthetic segments bounded to it.",
+            video_duration or 0.0,
+        )
+        raw_segments = _clamp_to_duration(
+            _make_synthetic_segments(transcript, top_n, video_duration)
+        )
+
     if not raw_segments:
         logger.error(
-            "AnalyzeVideoNode: no segments remain after duration filtering. "
-            "The transcript and the downloaded video appear to cover different content."
+            "AnalyzeVideoNode: no segments remain even after synthetic fallback "
+            "(video too short, or duration could not be probed)."
         )
         return {"analyzed_segments": [], "current_step": "analysis_failed",
-                "error": "No transcript content matched the downloaded video duration."}
+                "error": (
+                    "The video's captions cover a longer or different cut than the "
+                    "downloadable stream, and it's too short to clip — try a "
+                    "different video."
+                )}
 
     # --- 6. Sort and keep top-N
     raw_segments.sort(key=lambda s: s["hook_score"], reverse=True)

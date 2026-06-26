@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useJobStore } from "@/store/jobStore";
 import { cn } from "@/lib/utils";
+import { getDebugDump } from "@/lib/debugLog";
 
 /**
  * Collapsed by default to a 28px single-line bar. Click to expand into a
@@ -10,12 +11,24 @@ import { cn } from "@/lib/utils";
  * disclosure.
  */
 export function LogViewer() {
-  const { logs } = useJobStore();
+  const { logs, addToast } = useJobStore();
   const [expanded, setExpanded] = useState(false);
 
   if (logs.length === 0) return null;
 
   const visible = expanded ? logs : logs.slice(-1);
+
+  // Copy the full client-side diagnostic trace (API calls, SSE, query errors,
+  // error-boundary catches) so it can be pasted when reporting an issue.
+  const copyDebug = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(getDebugDump());
+      addToast("Debug logs copied to clipboard", "info");
+    } catch {
+      addToast("Could not copy debug logs", "error");
+    }
+  };
 
   return (
     <section className="border border-ink bg-paper">
@@ -31,8 +44,21 @@ export function LogViewer() {
             {String(logs.length).padStart(3, "0")} lines
           </span>
         </span>
-        <span aria-hidden className="text-[11px] tracking-normal text-ink-soft">
-          {expanded ? "↓ collapse" : "↑ expand"}
+        <span className="flex items-center gap-3">
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={copyDebug}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") copyDebug(e as unknown as React.MouseEvent);
+            }}
+            className="text-[10px] tracking-[0.15em] text-ink-soft hover:text-ink transition-colors cursor-pointer"
+          >
+            Copy debug logs
+          </span>
+          <span aria-hidden className="text-[11px] tracking-normal text-ink-soft">
+            {expanded ? "↓ collapse" : "↑ expand"}
+          </span>
         </span>
       </button>
 

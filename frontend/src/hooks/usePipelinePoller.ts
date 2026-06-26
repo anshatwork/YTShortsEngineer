@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useJob } from "@/hooks/useJob";
+import { useJobEvents } from "@/hooks/useJobEvents";
 import { useJobStore } from "@/store/jobStore";
 import { ApiError } from "@/lib/api";
 
@@ -14,9 +15,14 @@ import { ApiError } from "@/lib/api";
  *   - Any other error — toasted once. We dedupe by error message so a
  *     repeating failure does not flood the screen.
  *
- * When SSE replaces polling in useJob, this component's interface stays.
+ * Real-time updates arrive via SSE (useJobEvents), which writes into the same
+ * React Query cache useJob reads; useJob keeps a slow fallback poll as a safety
+ * net. This hook's interface is unchanged for callers.
  */
 export function usePipelinePoller(jobId: string) {
+  // Open the live event stream; it pushes updates into the useJob query cache.
+  useJobEvents(jobId);
+
   const { data: job, isError, error } = useJob(jobId);
   const updateFromPoll = useJobStore((s) => s.updateFromPoll);
   const addToast = useJobStore((s) => s.addToast);

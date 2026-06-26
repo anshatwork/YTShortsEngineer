@@ -10,6 +10,8 @@ import type {
   EditJobListResponse,
   MusicEditRequest,
   SplitScreenEditRequest,
+  ThumbnailEditRequest,
+  TtsScriptRequest,
   TTSEditRequest,
 } from "@/types/api";
 
@@ -47,7 +49,17 @@ export function useEditJobsForClip(
         clip_id: clipId ?? undefined,
       }),
     enabled: !!parentJobId && userId !== null,
-    refetchInterval: 4_000,
+    // Poll only while an edit is in flight; once every job is terminal we stop
+    // and rely on mount / window-focus refetch to pick up edits made elsewhere
+    // (e.g. on the clip edit page). Avoids one perpetual poll per clip card.
+    refetchInterval: (query) => {
+      const jobs = query.state.data?.edit_jobs ?? [];
+      const inFlight = jobs.some(
+        (j) => j.status === "running" || j.status === "queued",
+      );
+      return inFlight ? POLL_INTERVAL_RUNNING : false;
+    },
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -115,6 +127,39 @@ export function useSubmitSplitScreenEdit() {
       );
       addToast(`Split-screen queued (${job.edit_job_id.slice(0, 8)})`, "success");
     },
+    onError: (err: Error) => {
+      addToast(err.message, "error");
+    },
+  });
+}
+
+// ─── Submit thumbnail-generation edit ─────────────────────────────────────────
+export function useSubmitThumbnailEdit() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const { addToast } = useJobStore();
+
+  return useMutation({
+    mutationFn: (body: ThumbnailEditRequest) => api.submitThumbnailEdit(body),
+    onSuccess: (job) => {
+      queryClient.invalidateQueries({ queryKey: editJobsQueryKey(user?.id ?? null) });
+      queryClient.setQueryData(
+        ["edit-job", user?.id ?? null, job.edit_job_id],
+        job,
+      );
+      addToast(`Thumbnail queued (${job.edit_job_id.slice(0, 8)})`, "success");
+    },
+    onError: (err: Error) => {
+      addToast(err.message, "error");
+    },
+  });
+}
+
+// ─── Generate a TTS script from a summary (Claude/Qwen, synchronous) ──────────
+export function useGenerateTtsScript() {
+  const { addToast } = useJobStore();
+  return useMutation({
+    mutationFn: (body: TtsScriptRequest) => api.generateTtsScript(body),
     onError: (err: Error) => {
       addToast(err.message, "error");
     },

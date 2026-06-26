@@ -1,12 +1,25 @@
 import { API_BASE_URL, API_HOST_URL } from "@/lib/constants";
+import { pushDebug } from "@/lib/debugLog";
 import type {
+  DiscoverRequest,
+  DiscoverResponse,
+  DiscoverSuggestionsResponse,
   EditJob,
   EditJobListResponse,
   Job,
   JobListResponse,
   JobRequest,
+  AddSongRequest,
   MusicEditRequest,
+  MusicRefreshResponse,
+  MusicSearchResponse,
+  MusicThemesResponse,
+  MusicTrack,
+  MusicTrackListResponse,
   SplitScreenEditRequest,
+  ThumbnailEditRequest,
+  TtsScriptRequest,
+  TtsScriptResponse,
   TTSEditRequest,
   UploadResponse,
   YouTubeAuthStatus,
@@ -14,8 +27,6 @@ import type {
   YouTubeUploadListResponse,
   YouTubeUploadRequest,
 } from "@/types/api";
-
-const IS_DEV = process.env.NODE_ENV !== "production";
 
 /**
  * Typed API failure. Carries the HTTP status so callers can branch — e.g.
@@ -38,7 +49,7 @@ export class ApiError extends Error {
  * Returns null when Supabase is not configured or the user is not signed in
  * (e.g. during SSR or when AUTH_DISABLED=true on the backend).
  */
-async function getAccessToken(): Promise<string | null> {
+export async function getAccessToken(): Promise<string | null> {
   try {
     const { createClient } = await import("@/lib/supabase/client");
     const supabase = createClient();
@@ -68,7 +79,7 @@ async function apiFetch<T>(
   const display = label ?? url;
   const t0 = performance.now();
 
-  if (IS_DEV) console.info(`[api] → ${method} ${display}`);
+  pushDebug("info", "api", `→ ${method} ${display}`);
 
   // Build headers: start with any caller-supplied headers, add auth on top.
   const token = await getAccessToken();
@@ -87,7 +98,7 @@ async function apiFetch<T>(
     res = await fetch(url, { ...init, headers });
   } catch (err) {
     const ms = (performance.now() - t0).toFixed(0);
-    console.error(`[api] ✗ ${method} ${display} — network error after ${ms}ms`, err);
+    pushDebug("error", "api", `✗ ${method} ${display} — network error after ${ms}ms`, err);
     throw err;
   }
 
@@ -95,7 +106,12 @@ async function apiFetch<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    console.error(`[api] ✗ ${method} ${display} -> ${res.status} (${ms}ms): ${text}`);
+    pushDebug(
+      "error",
+      "api",
+      `✗ ${method} ${display} -> ${res.status} (${ms}ms)`,
+      text,
+    );
 
     if (res.status === 401 && typeof window !== "undefined") {
       window.location.href = "/login";
@@ -104,7 +120,7 @@ async function apiFetch<T>(
     throw new ApiError(res.status, text);
   }
 
-  if (IS_DEV) console.info(`[api] ← ${method} ${display} -> ${res.status} (${ms}ms)`);
+  pushDebug("info", "api", `← ${method} ${display} -> ${res.status} (${ms}ms)`);
   return res.json() as Promise<T>;
 }
 
@@ -124,6 +140,52 @@ export const api = {
       "/jobs",
     ),
 
+  // Re-run a job with its original parameters. Returns a NEW job record.
+  rerunJob: (jobId: string): Promise<Job> =>
+    apiFetch<Job>(
+      `${API_BASE_URL}/jobs/${jobId}/rerun`,
+      { method: "POST" },
+      `/jobs/${jobId}/rerun`,
+    ),
+
+  // ─── Discover (content sourcing) ────────────────────────────────────────
+  getDiscoverTopics: (): Promise<{ topics: string[] }> =>
+    apiFetch<{ topics: string[] }>(
+      `${API_BASE_URL}/discover/topics`,
+      undefined,
+      "/discover/topics",
+    ),
+
+  discover: (body: DiscoverRequest): Promise<DiscoverResponse> =>
+    apiFetch<DiscoverResponse>(
+      `${API_BASE_URL}/discover`,
+      { method: "POST", body: JSON.stringify(body) },
+      "/discover",
+    ),
+
+  // Personalized trending suggestions (based on the user's clip history).
+  getDiscoverSuggestions: (): Promise<DiscoverSuggestionsResponse> =>
+    apiFetch<DiscoverSuggestionsResponse>(
+      `${API_BASE_URL}/discover/suggestions`,
+      undefined,
+      "/discover/suggestions",
+    ),
+
+  // POST returns 204 No Content — don't parse a body.
+  markSuggestionsSeen: async (): Promise<void> => {
+    const token = await getAccessToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE_URL}/discover/suggestions/seen`, {
+      method: "POST",
+      headers,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new ApiError(res.status, text);
+    }
+  },
+
   // /health lives at the host root, NOT under /api/v1.
   health: () =>
     apiFetch<{ status: string; service: string }>(
@@ -138,6 +200,13 @@ export const api = {
       `${API_BASE_URL}/edit/tts`,
       { method: "POST", body: JSON.stringify(body) },
       "/edit/tts",
+    ),
+
+  generateTtsScript: (body: TtsScriptRequest): Promise<TtsScriptResponse> =>
+    apiFetch<TtsScriptResponse>(
+      `${API_BASE_URL}/edit/tts/script`,
+      { method: "POST", body: JSON.stringify(body) },
+      "/edit/tts/script",
     ),
 
   getEditJob: (editJobId: string): Promise<EditJob> =>
@@ -175,6 +244,128 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
       "/edit/split-screen",
     ),
+
+  submitThumbnailEdit: (body: ThumbnailEditRequest): Promise<EditJob> =>
+    apiFetch<EditJob>(
+      `${API_BASE_URL}/edit/generate-thumbnail`,
+      { method: "POST", body: JSON.stringify(body) },
+      "/edit/generate-thumbnail",
+    ),
+
+  // ─── Cached music library ───────────────────────────────────────────────
+  listMusicTracks: (params?: {
+    theme?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MusicTrackListResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.theme) qs.set("theme", params.theme);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.offset != null) qs.set("offset", String(params.offset));
+    const query = qs.toString() ? `?${qs.toString()}` : "";
+    return apiFetch<MusicTrackListResponse>(
+      `${API_BASE_URL}/music/tracks${query}`,
+      undefined,
+      `/music/tracks${query}`,
+    );
+  },
+
+  listMusicThemes: (): Promise<MusicThemesResponse> =>
+    apiFetch<MusicThemesResponse>(
+      `${API_BASE_URL}/music/themes`,
+      undefined,
+      "/music/themes",
+    ),
+
+  refreshMusic: (): Promise<MusicRefreshResponse> =>
+    apiFetch<MusicRefreshResponse>(
+      `${API_BASE_URL}/music/refresh`,
+      { method: "POST" },
+      "/music/refresh",
+    ),
+
+  // Multipart upload of a user-supplied track, tagged with a mood (theme).
+  uploadMusicTrack: async (
+    file: File,
+    theme: string,
+    title?: string,
+  ): Promise<MusicTrack> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("theme", theme);
+    if (title) fd.append("title", title);
+    const token = await getAccessToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE_URL}/music/tracks`, {
+      method: "POST",
+      headers,
+      body: fd,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new ApiError(res.status, text);
+    }
+    return res.json() as Promise<MusicTrack>;
+  },
+
+  // Free-catalog song search (live; results aren't cached until added).
+  searchMusic: (
+    q: string,
+    order: string = "popular",
+    limit = 12,
+    conversational = false,
+  ): Promise<MusicSearchResponse> => {
+    const qs = new URLSearchParams({ q, order, limit: String(limit) });
+    if (conversational) qs.set("conversational", "true");
+    return apiFetch<MusicSearchResponse>(
+      `${API_BASE_URL}/music/search?${qs.toString()}`,
+      undefined,
+      "/music/search",
+    );
+  },
+
+  // Browse the trending YouTube Music chart (copyrighted — manual pick only).
+  getTrendingSongs: (limit = 25): Promise<MusicSearchResponse> =>
+    apiFetch<MusicSearchResponse>(
+      `${API_BASE_URL}/music/trending?limit=${limit}`,
+      undefined,
+      "/music/trending",
+    ),
+
+  // Keyword-search YouTube for copyrighted songs (100 quota units/search; cached).
+  searchYouTubeSongs: (q: string, order = "relevance", limit = 15): Promise<MusicSearchResponse> => {
+    const qs = new URLSearchParams({ q, order, limit: String(limit), provider: "youtube" });
+    return apiFetch<MusicSearchResponse>(
+      `${API_BASE_URL}/music/search?${qs.toString()}`,
+      undefined,
+      "/music/search?provider=youtube",
+    );
+  },
+
+  // Commit a searched song into the 'songs' library.
+  addSong: (body: AddSongRequest): Promise<MusicTrack> =>
+    apiFetch<MusicTrack>(
+      `${API_BASE_URL}/music/songs`,
+      { method: "POST", body: JSON.stringify(body) },
+      "/music/songs",
+    ),
+
+  // DELETE returns 204 No Content — don't parse a body.
+  deleteMusicTrack: async (trackId: string, theme: string): Promise<void> => {
+    const qs = new URLSearchParams({ track_id: trackId, theme });
+    const token = await getAccessToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE_URL}/music/tracks?${qs.toString()}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new ApiError(res.status, text);
+    }
+  },
 
   // ─── YouTube direct upload ──────────────────────────────────────────────
   getYouTubeAuthStatus: (): Promise<YouTubeAuthStatus> =>

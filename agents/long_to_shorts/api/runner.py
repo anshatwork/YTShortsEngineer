@@ -32,6 +32,20 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 
 def run_job(job_id: str, request: "JobRequest") -> None:
+    """Execute a job, teeing all of its logs into ``logs/jobs/<job_id>.log``.
+
+    Thin wrapper around :func:`_run_job_impl` that binds the per-job logging
+    context (see ``core.logging_config.job_log_context``) so every log line for
+    this run — including those from nodes, the LLM and ffmpeg — is correlated
+    and captured in a single self-contained file.
+    """
+    from core.logging_config import job_log_context
+
+    with job_log_context(job_id):
+        _run_job_impl(job_id, request)
+
+
+def _run_job_impl(job_id: str, request: "JobRequest") -> None:
     """
     Execute the Long-to-Shorts pipeline for *request* and persist results to
     the job store.  Designed to be called from a background thread.
@@ -72,6 +86,17 @@ def run_job(job_id: str, request: "JobRequest") -> None:
         timed_segments: list = []
 
         if request.youtube_url:
+            # Best-effort: upgrade the job's displayed name to the real video
+            # title (the derived video-id label was set at creation). Never let
+            # a metadata-lookup failure affect the run.
+            try:
+                from tools.youtube.downloader import fetch_video_title
+                title = fetch_video_title(request.youtube_url)
+                if title:
+                    job_store.update(job_id, video_title=title)
+            except Exception as title_exc:  # noqa: BLE001
+                logger.warning("[job:%s] title fetch skipped: %s", job_id, title_exc)
+
             video_path, transcript, timed_segments = get_youtube_inputs(
                 request.youtube_url
             )
@@ -108,7 +133,9 @@ def run_job(job_id: str, request: "JobRequest") -> None:
         # ----------------------------------------------------------------
         os.environ["ADD_INTRO"]     = "1" if request.add_intro     else "0"
         os.environ["ADD_TOP_TEXT"]  = "1" if request.add_top_text  else "0"
+        os.environ["ADD_THUMBNAIL"] = "1" if request.add_thumbnail else "0"
         os.environ["ADD_SUBTITLES"] = "1" if request.add_subtitles else "0"
+        os.environ["ADD_MUSIC"]     = "1" if request.add_music     else "0"
         os.environ["SUBTITLES_POSITION"] = request.subtitle_position
         os.environ["SUBTITLES_SIZE"]     = request.subtitle_size
 
@@ -123,11 +150,16 @@ def run_job(job_id: str, request: "JobRequest") -> None:
             "source_video_path": str(Path(video_path).resolve()),
             "transcript":        transcript,
             "top_n_clips":       request.top_n,
+            "user_context":      request.user_context,
             "add_top_text":      request.add_top_text,
+            "add_thumbnail":     request.add_thumbnail,
+            "thumbnail_style":   request.thumbnail_style,
             "add_subtitles":     request.add_subtitles,
             "subtitle_position": request.subtitle_position,
             "subtitle_size":     request.subtitle_size,
             "add_intro":         request.add_intro,
+            "add_music":         request.add_music,
+            "music_volume_db":   request.music_volume_db,
             "clip_mode":         request.clip_mode,
             "timed_transcript":  timed_segments,
             "analyzed_segments": [],
@@ -163,6 +195,11 @@ def run_job(job_id: str, request: "JobRequest") -> None:
                 summary=c.get("summary"),
                 hook_text=c.get("hook_text"),
                 hashtags=c.get("hashtags"),
+                thumbnail_path=c.get("thumbnail_path"),
+                music_theme=c.get("music_theme"),
+                music_title=c.get("music_title"),
+                music_source=c.get("music_source"),
+                music_attribution=c.get("music_attribution"),
             )
             for c in final_state.get("generated_clips", [])
         ]

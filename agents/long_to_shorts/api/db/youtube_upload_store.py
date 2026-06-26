@@ -94,6 +94,28 @@ class SupabaseYouTubeUploadStore:
             return row_to_youtube_upload(data[0])
         return None
 
+    def set_idempotency_key(self, upload_id: str, key: str) -> None:
+        get_worker_client().table(_TABLE).update(
+            {"idempotency_key": key}
+        ).eq("upload_id", upload_id).execute()
+
+    def find_completed_by_idempotency(
+        self, user_id: str, key: str, *, exclude_upload_id: Optional[str] = None
+    ) -> Optional[YouTubeUploadJob]:
+        """Return a prior COMPLETED upload with the same idempotency key, if any."""
+        res = (
+            get_worker_client().table(_TABLE)
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("idempotency_key", key)
+            .eq("status", "done")
+            .execute()
+        )
+        for row in res.data or []:
+            if row["upload_id"] != exclude_upload_id and row.get("video_id"):
+                return row_to_youtube_upload(row)
+        return None
+
     def get(self, upload_id: str) -> Optional[YouTubeUploadJob]:
         client = get_worker_client()
         result = (

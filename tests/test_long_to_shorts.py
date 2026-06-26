@@ -122,7 +122,8 @@ class TestExtract916Clip(unittest.TestCase):
         mock_ffmpeg.input.return_value                = mock_input
         mock_input.video.filter.return_value          = mock_scaled
         mock_scaled.filter.return_value               = mock_padded
-        mock_padded.output.return_value               = mock_output
+        # The encoder calls ffmpeg.output(video, file, **kwargs) — not video.output().
+        mock_ffmpeg.output.return_value               = mock_output
         mock_output.overwrite_output.return_value     = mock_run
 
         # probe returns no audio so we take the video-only path
@@ -155,7 +156,7 @@ class TestExtract916Clip(unittest.TestCase):
         print(f"  ✓ filter('pad', w={_OUT_W}, h={_OUT_H}, centered)")
 
         # Codec args
-        call_kwargs = mock_padded.output.call_args[1]
+        call_kwargs = mock_ffmpeg.output.call_args[1]
         self.assertEqual(call_kwargs["vcodec"], "libx264")
         self.assertEqual(call_kwargs["r"], 60)
         print(f"  ✓ vcodec={call_kwargs['vcodec']}  fps={call_kwargs['r']}")

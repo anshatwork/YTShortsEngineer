@@ -25,6 +25,7 @@ export function ClipsGrid({ clips, jobId }: Props) {
   const [atStart, setAtStart] = useState(true);
   const [atEnd, setAtEnd] = useState(false);
   const [active, setActive] = useState(0);
+  const [isOverflowing, setIsOverflowing] = useState(false);
 
   const step = useCallback(() => {
     const w =
@@ -41,6 +42,7 @@ export function ClipsGrid({ clips, jobId }: Props) {
     setAtStart(el.scrollLeft <= 1);
     setAtEnd(el.scrollLeft >= max - 1);
     setActive(Math.round(el.scrollLeft / step()));
+    setIsOverflowing(el.scrollWidth > el.clientWidth);
   }, [step]);
 
   useEffect(() => {
@@ -106,7 +108,10 @@ export function ClipsGrid({ clips, jobId }: Props) {
       <div
         ref={railRef}
         onScroll={updateEdges}
-        className="flex gap-3 overflow-x-auto snap-x snap-mandatory scroll-smooth pb-1 [-webkit-overflow-scrolling:touch]"
+        className={cn(
+          "flex gap-3 overflow-x-auto snap-x snap-mandatory scroll-smooth pb-1 [-webkit-overflow-scrolling:touch]",
+          isOverflowing ? "justify-start" : "justify-center",
+        )}
       >
         {clips.map((clip, i) => (
           <div

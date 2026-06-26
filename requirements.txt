@@ -3,7 +3,8 @@ langchain-community>=0.4.0
 langchain-huggingface>=0.1.2
 huggingface-hub>=0.20.0
 langgraph>=0.0.40
-langchain-ollama>=1.0.0  # Local LLM via Ollama daemon
+langchain-ollama>=1.0.0  # Local LLM via Ollama daemon (fallback provider)
+anthropic>=0.69.0  # Claude API — default LLM provider (structured outputs, prompt caching)
 
 # --- Hugging Face ---
 

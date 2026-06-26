@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from agents.long_to_shorts.api.models import (
         MusicEditRequest,
         SplitScreenEditRequest,
+        ThumbnailEditRequest,
         TTSEditRequest,
     )
 
@@ -34,6 +35,8 @@ from tools.video_editing.audio_mixer import mix_background_music  # noqa: E402
 from tools.video_editing.layout_engine import compose_video  # noqa: E402
 from tools.youtube.downloader import download_video  # noqa: E402
 
+from core.logging_config import job_log_scope  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 # Make sure the project root is importable when this module is loaded by a
@@ -41,6 +44,43 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+
+# ---------------------------------------------------------------------------
+# TTS script generation (summary -> narration script) via the configured LLM
+# ---------------------------------------------------------------------------
+
+def generate_tts_script(
+    summary: str, target_seconds: int = 30, tone: Optional[str] = None
+) -> str:
+    """Expand a short summary into a TTS-ready narration script.
+
+    Uses the configured provider (Claude by default, Qwen via Ollama fallback)
+    through ``tools.llm.get_llm()``. The instruction is folded into a single
+    prompt string so it works across providers (Ollama ignores ``system``).
+    Returns plain spoken text — no section markers, no preamble, no stage
+    directions — ready to hand straight to the TTS engine.
+    """
+    from tools.llm import get_llm
+
+    # ~150 wpm ≈ 2.5 words/sec.
+    word_budget = max(20, int(target_seconds * 2.5))
+    tone_line = f"Tone: {tone}.\n" if tone else ""
+    prompt = (
+        "You are a scriptwriter for short-form video voiceovers. Write a narration "
+        f"script of about {word_budget} words (~{target_seconds} seconds spoken) based "
+        "on the summary below. Write only the words to be spoken: natural, conversational, "
+        "engaging. Do NOT include section labels (no [HOOK]/[BRIDGE]), speaker names, stage "
+        "directions, quotation marks, or any preamble like 'Here is'. Output the script text only.\n"
+        f"{tone_line}"
+        f"\nSummary:\n\"\"\"\n{summary.strip()}\n\"\"\""
+    )
+    script = get_llm().generate(prompt).strip()
+    # Defensive: strip a stray leading label some models still emit.
+    for prefix in ("Script:", "Narration:", "Voiceover:"):
+        if script.lower().startswith(prefix.lower()):
+            script = script[len(prefix):].lstrip()
+    return script
 
 
 # ---------------------------------------------------------------------------
@@ -153,22 +193,61 @@ def _probe_duration(path: Path) -> float:
 # Worker — TTS edit job
 # ---------------------------------------------------------------------------
 
+@job_log_scope
 def run_tts_edit_job(edit_job_id: str, request: "TTSEditRequest") -> None:
     """Execute a single TTS edit job and persist the result.
 
-    Two modes:
-      * standalone (``attach_to_clip_id`` is None): produces ``narration.mp3``
+    Three modes:
+      * standalone (no destination set): produces ``narration.mp3``
+      * behind-video (``video_upload_id`` or ``video_url`` set): produces
+        ``narrated.mp4`` — the narration laid over a full-screen video (the
+        video's own audio is dropped; it is looped/trimmed to the narration).
       * attach (``attach_to_clip_id`` set): produces ``<clip_id>_with_intro.mp4``
         — the source clip with a TTS voice-over intro prepended via crossfade.
     """
     from agents.long_to_shorts.api.edit_job_store import edit_job_store
 
     edit_job_store.update(edit_job_id, status="running")
-    logger.info("[edit:%s] tts started — preset=%s attach=%s",
-                edit_job_id, request.voice_preset, request.attach_to_clip_id)
+    logger.info(
+        "[edit:%s] tts started — preset=%s attach=%s video_upload=%s video_url=%s",
+        edit_job_id, request.voice_preset, request.attach_to_clip_id,
+        request.video_upload_id, request.video_url,
+    )
 
     try:
         out_dir = _edits_dir(edit_job_id)
+
+        # ----- Behind-video: narration over a single full-screen video -----
+        if request.video_upload_id or request.video_url:
+            audio_out = out_dir / "narration.mp3"
+            _generate_tts(request.text, request.voice_preset, audio_out)
+
+            if request.video_upload_id:
+                video_path = _resolve_uploaded_path(request.video_upload_id)
+            else:
+                video_path = out_dir / "source.mp4"
+                download_video(request.video_url, str(video_path))
+            logger.info("[edit:%s] tts behind-video resolved to %s",
+                        edit_job_id, video_path)
+
+            out_path = out_dir / "narrated.mp4"
+            compose_video(
+                fetched_video_path=str(video_path),
+                background_video_path=None,
+                voiceover_path=str(audio_out),
+                caption_clips=[],
+                output_path=str(out_path),
+                audio_mode="voiceover",
+                video_mode="fetched_video",
+            )
+            edit_job_store.update(
+                edit_job_id,
+                status="done",
+                output_path=str(out_path),
+                output_url=_to_static_url(out_path),
+            )
+            logger.info("[edit:%s] tts behind-video done — %s", edit_job_id, out_path)
+            return
 
         # ----- Standalone TTS -----
         if not request.attach_to_clip_id:
@@ -282,6 +361,7 @@ def _fetch_music_for_theme(theme: str) -> Optional[Path]:
     return Path(path) if path else None
 
 
+@job_log_scope
 def run_music_edit_job(edit_job_id: str, request: "MusicEditRequest") -> None:
     """Execute a music-mix edit job and persist the result.
 
@@ -294,9 +374,9 @@ def run_music_edit_job(edit_job_id: str, request: "MusicEditRequest") -> None:
 
     edit_job_store.update(edit_job_id, status="running")
     logger.info(
-        "[edit:%s] music started — theme=%s upload=%s path=%s vol=%.1f dB",
+        "[edit:%s] music started — theme=%s upload=%s path=%s vol=%.1f dB start=%.1fs",
         edit_job_id, request.theme, request.music_upload_id,
-        request.music_path, request.volume_db,
+        request.music_path, request.volume_db, request.music_start_sec,
     )
 
     try:
@@ -339,7 +419,9 @@ def run_music_edit_job(edit_job_id: str, request: "MusicEditRequest") -> None:
         # 3. Mix
         out_path = out_dir / f"{request.clip_id}_with_music.mp4"
         mix_background_music(
-            source_path, music_path, out_path, volume_db=request.volume_db,
+            source_path, music_path, out_path,
+            volume_db=request.volume_db,
+            music_start_sec=request.music_start_sec,
         )
 
         edit_job_store.update(
@@ -407,6 +489,7 @@ def _resolve_background(
     )
 
 
+@job_log_scope
 def run_split_screen_edit_job(
     edit_job_id: str, request: "SplitScreenEditRequest",
 ) -> None:
@@ -428,16 +511,19 @@ def run_split_screen_edit_job(
     try:
         out_dir = _edits_dir(edit_job_id)
 
-        # 1. Resolve source clip
-        source_clip = job_store.get_clip(request.parent_job_id, request.clip_id)
-        if source_clip is None or not source_clip.path:
-            raise ValueError(
-                f"Clip '{request.clip_id}' not found under job "
-                f"'{request.parent_job_id}', or it has no file path."
-            )
-        source_path = Path(source_clip.path)
+        # 1. Resolve foreground (top half): standalone upload, or an existing clip.
+        if request.foreground_upload_id:
+            source_path = _resolve_uploaded_path(request.foreground_upload_id)
+        else:
+            source_clip = job_store.get_clip(request.parent_job_id, request.clip_id)
+            if source_clip is None or not source_clip.path:
+                raise ValueError(
+                    f"Clip '{request.clip_id}' not found under job "
+                    f"'{request.parent_job_id}', or it has no file path."
+                )
+            source_path = Path(source_clip.path)
         if not source_path.exists():
-            raise FileNotFoundError(f"Source clip file missing: {source_path}")
+            raise FileNotFoundError(f"Foreground video missing: {source_path}")
 
         # 2. Resolve background (may download via yt-dlp)
         background_path = _resolve_background(request, out_dir)
@@ -445,7 +531,7 @@ def run_split_screen_edit_job(
                     edit_job_id, background_path)
 
         # 3. Compose split-screen — source on top, background on bottom
-        out_path = out_dir / f"{request.clip_id}_split.mp4"
+        out_path = out_dir / f"{request.clip_id or edit_job_id}_split.mp4"
         compose_video(
             fetched_video_path=str(source_path),
             background_video_path=str(background_path),
@@ -469,10 +555,83 @@ def run_split_screen_edit_job(
         edit_job_store.update(edit_job_id, status="failed", error=str(exc))
 
 
+# ---------------------------------------------------------------------------
+# Thumbnail — AI-directed thumbnail image for an existing clip
+# ---------------------------------------------------------------------------
+
+@job_log_scope
+def run_thumbnail_edit_job(edit_job_id: str, request: "ThumbnailEditRequest") -> None:
+    """Generate an AI-directed thumbnail for an existing clip and persist it.
+
+    Resolves the source clip via job_store, then reuses the shared
+    ``tools.thumbnail.generate_thumbnail`` helper (the same one the pipeline's
+    ThumbnailNode uses). Optional ``headline`` / ``accent_color`` overrides let the
+    user steer the design while the LLM fills in the rest. Output is written to
+    ``output/edits/{edit_job_id}/{clip_id}_thumb.jpg``.
+    """
+    from agents.long_to_shorts.api.edit_job_store import edit_job_store
+    from agents.long_to_shorts.api.job_store import job_store
+    from tools.thumbnail import generate_thumbnail
+
+    edit_job_store.update(edit_job_id, status="running")
+    logger.info(
+        "[edit:%s] thumbnail started — clip=%s headline_override=%s",
+        edit_job_id, request.clip_id, bool(request.headline),
+    )
+
+    try:
+        out_dir = _edits_dir(edit_job_id)
+
+        source_clip = job_store.get_clip(request.parent_job_id, request.clip_id)
+        if source_clip is None or not source_clip.path:
+            raise ValueError(
+                f"Clip '{request.clip_id}' not found under job "
+                f"'{request.parent_job_id}', or it has no file path."
+            )
+        source_path = Path(source_clip.path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source clip file missing: {source_path}")
+
+        out_path = out_dir / f"{request.clip_id}_thumb.jpg"
+        result = generate_thumbnail(
+            clip_meta={
+                "title": source_clip.title,
+                "hook_text": source_clip.hook_text,
+                "summary": source_clip.summary,
+                "hashtags": source_clip.hashtags,
+            },
+            video_path=str(source_path),
+            out_path=str(out_path),
+            headline_override=request.headline,
+            accent_override=request.accent_color,
+            text_color=request.text_color,
+            style=request.style,
+            font=request.font,
+        )
+        if not result:
+            raise RuntimeError(
+                "Thumbnail generation produced no image (no usable frame and the "
+                "Pixabay fallback was unavailable — set PIXABAY_API_KEY)."
+            )
+
+        edit_job_store.update(
+            edit_job_id,
+            status="done",
+            output_path=str(out_path),
+            output_url=_to_static_url(out_path),
+        )
+        logger.info("[edit:%s] thumbnail done — %s", edit_job_id, out_path)
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[edit:%s] thumbnail failed: %s", edit_job_id, exc)
+        edit_job_store.update(edit_job_id, status="failed", error=str(exc))
+
+
 __all__ = [
     "run_tts_edit_job",
     "run_music_edit_job",
     "run_split_screen_edit_job",
+    "run_thumbnail_edit_job",
     "_to_static_url",
     "_edits_dir",
 ]

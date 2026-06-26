@@ -204,4 +204,24 @@
   .zone-ink {
     border-top: 1px solid var(--color-ink);
   }
+
+  /* Discover card — shine sweep on hover */
+  @keyframes cardShine {
+    from { left: -100%; }
+    to   { left: 200%; }
+  }
+  .discover-card::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 60%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(251,250,245,0.07), transparent);
+    transform: skewX(-20deg);
+    pointer-events: none;
+  }
+  .discover-card:hover::after {
+    animation: cardShine 0.65s ease forwards;
+  }
 }

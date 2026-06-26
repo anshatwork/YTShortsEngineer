@@ -127,8 +127,11 @@ def _make_edit_job_store():
         from agents.long_to_shorts.api.db.edit_job_store import (
             supabase_edit_job_store,
         )
-        return supabase_edit_job_store
-    return _MemoryEditJobStore()
+        inner = supabase_edit_job_store
+    else:
+        inner = _MemoryEditJobStore()
+    from agents.long_to_shorts.api.event_store import EventEmittingStore
+    return EventEmittingStore(inner, channel_prefix="edit", id_attr="edit_job_id")
 
 
 edit_job_store = _make_edit_job_store()

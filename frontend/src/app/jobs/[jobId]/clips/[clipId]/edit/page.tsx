@@ -1,15 +1,17 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useJob } from "@/hooks/useJob";
 import {
   useEditJobsForClip,
   useSubmitMusicEdit,
   useSubmitSplitScreenEdit,
+  useSubmitThumbnailEdit,
   useSubmitTtsEdit,
   useUploadAsset,
 } from "@/hooks/useEditJob";
+import { useMusicTracks } from "@/hooks/useMusicLibrary";
 import { API_HOST_URL } from "@/lib/constants";
 import { pathToStaticUrl } from "@/lib/utils";
 import {
@@ -17,6 +19,8 @@ import {
   type AudioTheme,
   type EditJob,
   type SplitScreenAudioMode,
+  type ThumbnailFont,
+  type ThumbnailStyle,
   type VoicePreset,
 } from "@/types/api";
 
@@ -42,7 +46,7 @@ export default function ClipEditPage({ params }: Props) {
     <div className="space-y-6">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 font-mono text-[10px] tracking-[0.18em] uppercase text-ink-muted">
-        <Link href="/" className="hover:text-ink transition-colors">
+        <Link href="/workspace" className="hover:text-ink transition-colors">
           ← workspace
         </Link>
         <span aria-hidden className="text-ink-soft">/</span>
@@ -87,9 +91,18 @@ export default function ClipEditPage({ params }: Props) {
       <TtsSection jobId={jobId} clipId={clipId} hasClip={!!clip?.path} />
 
       {/* Phase 2 — Background music */}
-      <MusicSection jobId={jobId} clipId={clipId} hasClip={!!clip?.path} />
+      <MusicSection
+        jobId={jobId}
+        clipId={clipId}
+        hasClip={!!clip?.path}
+        clipDurationSec={
+          clip ? clip.timestamp_range[1] - clip.timestamp_range[0] : undefined
+        }
+      />
       {/* Phase 3 — Split-screen */}
       <SplitScreenSection jobId={jobId} clipId={clipId} hasClip={!!clip?.path} />
+      {/* Thumbnail — AI-directed thumbnail image */}
+      <ThumbnailSection jobId={jobId} clipId={clipId} hasClip={!!clip?.path} />
 
       {/* Edit history */}
       <section className="border border-ink bg-paper p-4 space-y-3">
@@ -193,20 +206,37 @@ function MusicSection({
   jobId,
   clipId,
   hasClip,
+  clipDurationSec,
 }: {
   jobId: string;
   clipId: string;
   hasClip: boolean;
+  clipDurationSec?: number;
 }) {
-  type SourceMode = "theme" | "upload" | "path";
-  const [mode, setMode] = useState<SourceMode>("theme");
+  type SourceMode = "theme" | "library" | "upload" | "path";
+  const [mode, setMode] = useState<SourceMode>("library");
   const [theme, setTheme] = useState<AudioTheme>("professional");
+  // Library tab filter: a mood OR the dedicated "songs" library.
+  const [libFilter, setLibFilter] = useState<AudioTheme | "songs">("songs");
   const [musicPath, setMusicPath] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadedId, setUploadedId] = useState<string | null>(null);
+  const [pickedPath, setPickedPath] = useState<string | null>(null);
+  const [pickedDuration, setPickedDuration] = useState<number | null>(null);
+  const [musicStartSec, setMusicStartSec] = useState(0);
   const [volumeDb, setVolumeDb] = useState(-18);
+  const previewRef = useRef<HTMLAudioElement>(null);
   const submit = useSubmitMusicEdit();
   const upload = useUploadAsset();
+
+  // Cached tracks for the "library" tab, filtered by the mood/songs select.
+  const tracks = useMusicTracks(libFilter);
+
+  // Furthest into the song we can start so the clip-length window still fits.
+  const maxStart =
+    pickedDuration != null
+      ? Math.max(0, Math.floor(pickedDuration - (clipDurationSec ?? 0)))
+      : null;
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] ?? null;
@@ -222,6 +252,7 @@ function MusicSection({
     hasClip &&
     !submit.isPending &&
     ((mode === "theme" && !!theme) ||
+      (mode === "library" && !!pickedPath) ||
       (mode === "upload" && !!uploadedId) ||
       (mode === "path" && !!musicPath.trim()));
 
@@ -232,7 +263,9 @@ function MusicSection({
       parent_job_id: jobId,
       clip_id: clipId,
       volume_db: volumeDb,
+      music_start_sec: musicStartSec > 0 ? musicStartSec : undefined,
       ...(mode === "theme" ? { theme } : {}),
+      ...(mode === "library" && pickedPath ? { music_path: pickedPath } : {}),
       ...(mode === "upload" && uploadedId ? { music_upload_id: uploadedId } : {}),
       ...(mode === "path" ? { music_path: musicPath } : {}),
     });
@@ -246,7 +279,7 @@ function MusicSection({
       <form onSubmit={onSubmit} className="space-y-3">
         {/* Source mode tabs */}
         <div className="flex border border-ink font-mono text-[10px] tracking-[0.18em] uppercase">
-          {(["theme", "upload", "path"] as SourceMode[]).map((m, i) => (
+          {(["theme", "library", "upload", "path"] as SourceMode[]).map((m, i) => (
             <button
               key={m}
               type="button"
@@ -277,6 +310,90 @@ function MusicSection({
             </select>
           </label>
         )}
+        {mode === "library" && (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 font-mono text-[11px] text-ink">
+              <span>From</span>
+              <select
+                value={libFilter}
+                onChange={(e) => {
+                  setLibFilter(e.target.value as AudioTheme | "songs");
+                  setPickedPath(null);
+                }}
+                className="border border-ink bg-paper px-2 py-1 font-mono text-[11px]"
+              >
+                <option value="songs">songs (your library)</option>
+                {AUDIO_THEMES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </label>
+
+            {tracks.isLoading ? (
+              <p className="font-mono text-[11px] text-ink-muted">loading tracks…</p>
+            ) : (tracks.data?.tracks.length ?? 0) === 0 ? (
+              <p className="font-mono text-[11px] text-ink-muted">
+                {libFilter === "songs"
+                  ? "No songs added yet. Search & add them on the Discover page (Songs)."
+                  : "No cached tracks for this mood yet. Refresh on the Discover page (needs JAMENDO_CLIENT_ID)."}
+              </p>
+            ) : (
+              <ul className="max-h-72 overflow-y-auto border border-rule-soft divide-y divide-rule-soft">
+                {tracks.data!.tracks.map((t) => {
+                  const picked = pickedPath === t.path;
+                  return (
+                    <li
+                      key={t.track_id}
+                      className={`p-2 space-y-1 cursor-pointer transition-colors ${
+                        picked ? "bg-paper-2" : "hover:bg-paper-2"
+                      }`}
+                      onClick={() => {
+                        setPickedPath(t.path);
+                        setPickedDuration(t.duration ?? null);
+                        setMusicStartSec(0);
+                      }}
+                    >
+                      <div className="flex items-center gap-2 font-mono text-[11px] text-ink">
+                        <input
+                          type="radio"
+                          name="music-library-pick"
+                          checked={picked}
+                          onChange={() => {
+                            setPickedPath(t.path);
+                            setPickedDuration(t.duration ?? null);
+                            setMusicStartSec(0);
+                          }}
+                        />
+                        <span className="truncate flex-1">{t.title}</span>
+                        {t.duration != null && (
+                          <span className="num-tabular text-ink-muted">
+                            {formatSeconds(t.duration)}
+                          </span>
+                        )}
+                        <span className="text-ink-soft uppercase tracking-[0.12em]">
+                          {t.source}
+                        </span>
+                      </div>
+                      <audio
+                        ref={picked ? previewRef : undefined}
+                        controls
+                        preload="none"
+                        src={`${API_HOST_URL}${t.preview_url}`}
+                        className="w-full h-8"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      {t.attribution && (
+                        <p className="font-mono text-[9px] text-ink-soft truncate">
+                          {t.attribution}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
         {mode === "upload" && (
           <div className="flex items-center gap-3 font-mono text-[11px] text-ink">
             <input
@@ -301,6 +418,68 @@ function MusicSection({
             placeholder="e.g. assets/audio_cache/professional/track.mp3"
             className="w-full border border-ink bg-paper-2 p-2 font-mono text-[11px] text-ink"
           />
+        )}
+
+        {/* Start-at: which part of the song plays under the clip */}
+        {mode === "library" && pickedPath && pickedDuration != null && maxStart != null && (
+          maxStart === 0 ? (
+            <p className="font-mono text-[11px] text-ink-muted">
+              Track ({formatSeconds(pickedDuration)}) is shorter than the clip
+              {clipDurationSec ? ` (${formatSeconds(clipDurationSec)})` : ""} — it
+              will loop from the start.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-3 font-mono text-[11px] text-ink">
+                <span className="whitespace-nowrap">Start at</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={maxStart}
+                  step={1}
+                  value={Math.min(musicStartSec, maxStart)}
+                  onChange={(e) => setMusicStartSec(parseInt(e.target.value, 10))}
+                  className="flex-1 max-w-[18rem]"
+                />
+                <span className="num-tabular text-ink-muted whitespace-nowrap">
+                  {formatSeconds(musicStartSec)}
+                  {clipDurationSec
+                    ? `–${formatSeconds(musicStartSec + clipDurationSec)}`
+                    : ""}{" "}
+                  / {formatSeconds(pickedDuration)}
+                </span>
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  const t = Math.floor(previewRef.current?.currentTime ?? 0);
+                  setMusicStartSec(Math.max(0, Math.min(t, maxStart)));
+                }}
+                className="font-mono text-[10px] tracking-[0.14em] uppercase text-ink-muted hover:text-ink transition-colors"
+              >
+                ⤓ use preview position
+              </button>
+            </div>
+          )
+        )}
+        {((mode === "library" && pickedPath && pickedDuration == null) ||
+          mode === "theme" ||
+          (mode === "upload" && uploadedId) ||
+          (mode === "path" && !!musicPath.trim())) && (
+          <label className="flex items-center gap-3 font-mono text-[11px] text-ink">
+            <span className="whitespace-nowrap">Start at (sec)</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={musicStartSec}
+              onChange={(e) =>
+                setMusicStartSec(Math.max(0, parseInt(e.target.value || "0", 10)))
+              }
+              className="w-24 border border-ink bg-paper-2 px-2 py-1 font-mono text-[11px] text-ink"
+            />
+            <span className="text-ink-soft">into the song (0 = from the start)</span>
+          </label>
         )}
 
         {/* Volume slider */}
@@ -477,12 +656,149 @@ function SplitScreenSection({
   );
 }
 
+// ─── Thumbnail section ───────────────────────────────────────────────────────
+
+function ThumbnailSection({
+  jobId,
+  clipId,
+  hasClip,
+}: {
+  jobId: string;
+  clipId: string;
+  hasClip: boolean;
+}) {
+  const [headline, setHeadline] = useState("");
+  const [accent, setAccent] = useState("");
+  const [textColor, setTextColor] = useState("");
+  const [style, setStyle] = useState<ThumbnailStyle>("auto");
+  const [font, setFont] = useState<ThumbnailFont>("auto");
+  const submit = useSubmitThumbnailEdit();
+
+  const canSubmit = hasClip && !submit.isPending;
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    submit.mutate({
+      parent_job_id: jobId,
+      clip_id: clipId,
+      style,
+      font,
+      ...(headline.trim() ? { headline: headline.trim() } : {}),
+      ...(accent.trim() ? { accent_color: accent.trim() } : {}),
+      ...(textColor.trim() ? { text_color: textColor.trim() } : {}),
+    });
+  };
+
+  const STYLES: { value: ThumbnailStyle; label: string }[] = [
+    { value: "auto", label: "AUTO" },
+    { value: "bubble", label: "BUBBLE" },
+    { value: "highlight", label: "HIGHLIGHT" },
+    { value: "box", label: "BOX" },
+    { value: "plain", label: "PLAIN" },
+  ];
+
+  return (
+    <section className="border border-ink bg-paper p-4 space-y-3">
+      <p className="font-mono text-[10px] tracking-[0.2em] uppercase text-ink-soft">
+        Generate thumbnail (AI)
+      </p>
+      <form onSubmit={onSubmit} className="space-y-3">
+        <p className="font-mono text-[11px] text-ink-muted">
+          The model writes the headline and picks the styling from the clip&apos;s
+          topic. Leave fields on AUTO / blank to let it decide, or override below.
+        </p>
+
+        {/* Style selector */}
+        <div className="space-y-1.5">
+          <span className="block font-mono text-[10px] tracking-[0.2em] uppercase text-ink-muted">
+            Style
+          </span>
+          <div className="flex flex-wrap border border-ink">
+            {STYLES.map((s, i) => (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => setStyle(s.value)}
+                className={`flex-1 h-8 px-2 font-mono text-[10px] tracking-[0.12em] ${
+                  i > 0 ? "border-l border-ink" : ""
+                } ${
+                  style === s.value
+                    ? "bg-ink text-paper"
+                    : "bg-paper text-ink hover:bg-paper-2"
+                } transition-colors`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label className="flex items-center gap-2 font-mono text-[11px] text-ink">
+          <span className="w-20">Headline</span>
+          <input
+            type="text"
+            value={headline}
+            maxLength={30}
+            onChange={(e) => setHeadline(e.target.value)}
+            placeholder="(optional) override, ≤30 chars"
+            className="flex-1 border border-ink bg-paper-2 p-2 font-mono text-[11px] text-ink"
+          />
+        </label>
+        <label className="flex items-center gap-2 font-mono text-[11px] text-ink">
+          <span className="w-20">Font</span>
+          <select
+            value={font}
+            onChange={(e) => setFont(e.target.value as ThumbnailFont)}
+            className="border border-ink bg-paper px-2 py-1 font-mono text-[11px]"
+          >
+            <option value="auto">auto (Impact)</option>
+            <option value="impact">impact</option>
+            <option value="arial">arial</option>
+            <option value="condensed">condensed</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-2 font-mono text-[11px] text-ink">
+          <span className="w-20">Accent</span>
+          <input
+            type="text"
+            value={accent}
+            onChange={(e) => setAccent(e.target.value)}
+            placeholder="(optional) fill/accent hex, e.g. #FF2D55"
+            className="flex-1 border border-ink bg-paper-2 p-2 font-mono text-[11px] text-ink"
+          />
+        </label>
+        <label className="flex items-center gap-2 font-mono text-[11px] text-ink">
+          <span className="w-20">Text color</span>
+          <input
+            type="text"
+            value={textColor}
+            onChange={(e) => setTextColor(e.target.value)}
+            placeholder="(optional) hex; blank = auto-contrast"
+            className="flex-1 border border-ink bg-paper-2 p-2 font-mono text-[11px] text-ink"
+          />
+        </label>
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="border border-ink px-3 py-1 font-mono text-[11px] tracking-[0.18em] uppercase bg-ink text-paper hover:bg-paper hover:text-ink transition-colors disabled:opacity-40"
+          >
+            {submit.isPending ? "submitting…" : "generate thumbnail"}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 // ─── Edit history row ────────────────────────────────────────────────────────
 
 function EditJobRow({ job }: { job: EditJob }) {
   const url = job.output_url ? `${API_HOST_URL}${job.output_url}` : null;
   const isVideo = !!url && /\.(mp4|webm|mov)$/i.test(url);
   const isAudio = !!url && /\.(mp3|wav|m4a|ogg)$/i.test(url);
+  const isImage = !!url && /\.(jpg|jpeg|png|webp)$/i.test(url);
 
   return (
     <li className="border border-rule-soft bg-paper-2 p-3 space-y-2">
@@ -504,8 +820,18 @@ function EditJobRow({ job }: { job: EditJob }) {
       {url && isAudio && (
         <audio controls src={url} className="w-full" />
       )}
+      {url && isImage && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt="Generated thumbnail" className="max-h-[300px] aspect-[9/16] object-contain bg-black" />
+      )}
     </li>
   );
+}
+
+function formatSeconds(total: number): string {
+  const s = Math.max(0, Math.round(total));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
 function statusColor(s: string): string {

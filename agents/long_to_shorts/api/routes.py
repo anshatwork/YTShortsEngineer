@@ -68,7 +68,59 @@ async def submit_job(
     )
 
     from agents.long_to_shorts.api.runner import run_job  # late import (heavy deps)
-    http_request.app.state.executor.submit(run_job, job.job_id, body)
+    # Decoupled from the concrete executor: the TaskQueue abstraction lets this
+    # move to Celery/Temporal later without touching routes (core/execution).
+    http_request.app.state.task_queue.enqueue(run_job, job.job_id, body)
+
+    return job
+
+
+# ---------------------------------------------------------------------------
+# POST /jobs/{job_id}/rerun  —  re-run a job with its original parameters
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/jobs/{job_id}/rerun",
+    response_model=JobStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Re-run a job using its original submission parameters",
+    description=(
+        "Creates a NEW job from the original request of *job_id* (the failed "
+        "job is preserved for debugging) and enqueues it. Returns the new job "
+        "record; poll it like any other job."
+    ),
+)
+async def rerun_job(
+    job_id: str,
+    http_request: Request,
+    user_id: str = Depends(get_current_user_id),
+) -> JobStatus:
+    # Ownership + existence check.
+    existing = job_store.get_for_user(job_id, user_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+
+    original = job_store.get_request_for_user(job_id, user_id)
+    if original is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Original parameters for this job are unavailable, so it cannot "
+                "be re-run. Please submit a new job."
+            ),
+        )
+
+    job = job_store.create(original, user_id=user_id)
+    logger.info(
+        "Job %s queued as rerun of %s — user=%s source=%s",
+        job.job_id, job_id, user_id, original.youtube_url or original.video_path,
+    )
+
+    from agents.long_to_shorts.api.runner import run_job  # late import (heavy deps)
+    http_request.app.state.task_queue.enqueue(run_job, job.job_id, original)
 
     return job
 

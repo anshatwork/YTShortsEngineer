@@ -3,13 +3,16 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { ShellStatus } from "./ShellStatus";
 import { YouTubeConnect } from "./YouTubeConnect";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useDiscoverSuggestions } from "@/hooks/useDiscoverSuggestions";
 
 const navLinks = [
-  { href: "/", label: "WORKSPACE" },
+  { href: "/workspace", label: "WORKSPACE" },
+  { href: "/discover", label: "DISCOVER" },
   { href: "/new", label: "NEW JOB" },
+  { href: "/create", label: "CREATE" },
+  { href: "/contact", label: "CONTACT" },
 ];
 
 /**
@@ -20,6 +23,8 @@ export function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, signOut, isLoading, isLocalDev } = useAuth();
+  const { data: suggestions } = useDiscoverSuggestions();
+  const newSuggestions = suggestions?.new_count ?? 0;
 
   const handleSignOut = async () => {
     await signOut();
@@ -50,6 +55,7 @@ export function Navbar() {
             const active =
               pathname === href ||
               (href !== "/" && pathname.startsWith(href));
+            const showBadge = href === "/discover" && newSuggestions > 0;
             return (
               <Link
                 key={href}
@@ -60,6 +66,14 @@ export function Navbar() {
                 )}
               >
                 {label}
+                {showBadge && (
+                  <span
+                    aria-label={`${newSuggestions} new suggestions`}
+                    className="absolute top-1.5 right-0 min-w-[15px] h-[15px] px-1 inline-flex items-center justify-center rounded-full bg-[var(--color-mark)] text-paper font-mono text-[9px] font-bold leading-none"
+                  >
+                    {newSuggestions > 9 ? "9+" : newSuggestions}
+                  </span>
+                )}
                 {active && (
                   <span
                     aria-hidden
@@ -73,11 +87,6 @@ export function Navbar() {
 
         {/* Spacer */}
         <div className="flex-1" />
-
-        {/* Live status — hidden on small screens */}
-        <div className="hidden md:block">
-          <ShellStatus />
-        </div>
 
         {/* Auth controls */}
         {!isLoading && (

@@ -31,7 +31,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from agents.long_to_shorts.api.models import ClipResult, JobRequest, JobStatus
+from agents.long_to_shorts.api.models import (
+    ClipResult,
+    JobRequest,
+    JobStatus,
+    derive_job_title,
+)
 
 
 class _MemoryJobStore:
@@ -40,6 +45,8 @@ class _MemoryJobStore:
     def __init__(self) -> None:
         self._lock: threading.Lock = threading.Lock()
         self._jobs: Dict[str, JobStatus] = {}
+        # Persist the original request so a failed job can be re-run.
+        self._requests: Dict[str, JobRequest] = {}
 
     def create(self, request: JobRequest, *, user_id: str = "dev") -> JobStatus:
         now = datetime.now(tz=timezone.utc)
@@ -48,10 +55,19 @@ class _MemoryJobStore:
             status="queued",
             created_at=now,
             updated_at=now,
+            video_title=derive_job_title(request),
         )
         with self._lock:
             self._jobs[job.job_id] = job
+            self._requests[job.job_id] = request
         return job
+
+    def get_request_for_user(
+        self, job_id: str, user_id: str
+    ) -> Optional[JobRequest]:
+        """Return the original JobRequest for *job_id* (used to re-run it)."""
+        with self._lock:
+            return self._requests.get(job_id)
 
     def update(
         self,
@@ -61,6 +77,7 @@ class _MemoryJobStore:
         clips: Optional[List[ClipResult]] = None,
         error: Optional[str] = None,
         current_node: Optional[str] = None,
+        video_title: Optional[str] = None,
     ) -> Optional[JobStatus]:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -75,6 +92,8 @@ class _MemoryJobStore:
                 updates["error"] = error
             if current_node is not None:
                 updates["current_node"] = current_node
+            if video_title is not None:
+                updates["video_title"] = video_title
             updated = job.model_copy(update=updates)
             self._jobs[job_id] = updated
             return updated
@@ -122,8 +141,12 @@ def _make_job_store():
     backend = os.getenv("JOB_STORE", "memory").lower()
     if backend == "supabase":
         from agents.long_to_shorts.api.db.job_store import supabase_job_store
-        return supabase_job_store
-    return _MemoryJobStore()
+        inner = supabase_job_store
+    else:
+        inner = _MemoryJobStore()
+    # Wrap so every update() publishes a real-time event (Part 1 / SSE).
+    from agents.long_to_shorts.api.event_store import EventEmittingStore
+    return EventEmittingStore(inner, channel_prefix="job", id_attr="job_id")
 
 
 job_store = _make_job_store()

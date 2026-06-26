@@ -175,3 +175,7 @@ class OllamaLLM(BaseLLMProvider):
         """
         response = self._chat.invoke([HumanMessage(content=prompt)])
         return response.content if hasattr(response, "content") else str(response)
+
+    def complete(self, prompt: str) -> str:
+        """Single-turn completion (alias of :meth:`generate`) for the parse() path."""
+        return self.generate(prompt)

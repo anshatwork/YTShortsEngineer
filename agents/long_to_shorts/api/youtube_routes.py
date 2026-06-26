@@ -198,7 +198,7 @@ async def submit_upload(
     )
 
     from agents.long_to_shorts.api.youtube_upload_runner import run_youtube_upload_job
-    http_request.app.state.executor.submit(
+    http_request.app.state.task_queue.enqueue(
         run_youtube_upload_job, upload_job.upload_id, body, user_id
     )
     return upload_job

@@ -14,9 +14,12 @@ from typing import Any, Dict, List, Optional
 
 from agents.long_to_shorts.api.models import (
     ClipResult,
+    DiscoverVideo,
     EditJob,
+    JobRequest,
     JobStatus,
     YouTubeUploadJob,
+    derive_job_title,
 )
 
 
@@ -66,6 +69,7 @@ def row_to_job_status(row: Dict[str, Any]) -> JobStatus:
         clips=_parse_clips(row.get("clips")),
         error=row.get("error"),
         current_node=row.get("current_node"),
+        video_title=row.get("video_title"),
     )
 
 
@@ -75,16 +79,18 @@ def job_status_to_insert(
     request_body: Any,
 ) -> Dict[str, Any]:
     """Build the dict for a new clip_jobs INSERT."""
-    request_json = (
-        request_body.model_dump(mode="json")
-        if hasattr(request_body, "model_dump")
-        else request_body
+    request_model = (
+        request_body
+        if isinstance(request_body, JobRequest)
+        else JobRequest(**(request_body or {}))
     )
+    request_json = request_model.model_dump(mode="json")
     return {
         "job_id": job_id,
         "user_id": user_id,
         "status": "queued",
         "request": request_json,
+        "video_title": derive_job_title(request_model),
     }
 
 
@@ -94,6 +100,7 @@ def job_status_to_update(
     clips: Optional[List[ClipResult]] = None,
     error: Optional[str] = None,
     current_node: Optional[str] = None,
+    video_title: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the dict for a partial clip_jobs UPDATE (only set fields)."""
     patch: Dict[str, Any] = {}
@@ -105,6 +112,8 @@ def job_status_to_update(
         patch["error"] = error
     if current_node is not None:
         patch["current_node"] = current_node
+    if video_title is not None:
+        patch["video_title"] = video_title
     return patch
 
 
@@ -229,3 +238,26 @@ def youtube_upload_to_update(
     if error is not None:
         patch["error"] = error
     return patch
+
+
+# ---------------------------------------------------------------------------
+# trending_pool ↔ DiscoverVideo
+# ---------------------------------------------------------------------------
+
+def trending_video_to_insert(video: DiscoverVideo, topic: str) -> Dict[str, Any]:
+    """Build the dict for a trending_pool upsert (keyed on video_id)."""
+    return {
+        "video_id": video.video_id,
+        "topic": topic,
+        "payload": video.model_dump(mode="json"),
+        "view_count": video.view_count,
+        "published_at": video.published_at or None,
+    }
+
+
+def row_to_trending_video(row: Dict[str, Any]) -> DiscoverVideo:
+    """Rehydrate the payload JSONB column into a DiscoverVideo."""
+    raw = row.get("payload")
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return DiscoverVideo(**(raw or {}))

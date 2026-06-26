@@ -29,7 +29,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "YT Shorts Engineer · Workspace",
+  title: "YT Shorts Engineer",
   description: "A workspace for turning long-form video into short clips.",
   keywords: ["youtube shorts", "video editing", "clip generator", "LangGraph"],
 };

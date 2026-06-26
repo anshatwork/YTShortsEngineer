@@ -64,12 +64,21 @@ function deriveNodes(job: Job): NodeState[] {
 
 // ─── Store definition ─────────────────────────────────────────────────────────
 
+// Live-stream connection state for the active job (SSE). Drives an optional
+// "live / reconnecting" indicator; not required for correctness.
+export type ConnectionStatus =
+  | "idle"
+  | "connecting"
+  | "live"
+  | "reconnecting";
+
 interface JobStore {
   // Active job
   jobId: string | null;
   nodes: NodeState[];
   logs: string[];
   clips: ClipResult[];
+  connectionStatus: ConnectionStatus;
 
   // UI
   toasts: Toast[];
@@ -77,6 +86,7 @@ interface JobStore {
   // Actions
   setActiveJob: (jobId: string) => void;
   updateFromPoll: (job: Job) => void;
+  setConnectionStatus: (status: ConnectionStatus) => void;
   addLog: (line: string) => void;
   addToast: (message: string, type?: Toast["type"]) => void;
   dismissToast: (id: string) => void;
@@ -88,10 +98,11 @@ export const useJobStore = create<JobStore>((set) => ({
   nodes: initialNodes(),
   logs: [],
   clips: [],
+  connectionStatus: "idle",
   toasts: [],
 
   setActiveJob: (jobId) =>
-    set({ jobId, nodes: initialNodes(), logs: [], clips: [] }),
+    set({ jobId, nodes: initialNodes(), logs: [], clips: [], connectionStatus: "idle" }),
 
   updateFromPoll: (job) =>
     set((state) => ({
@@ -102,6 +113,8 @@ export const useJobStore = create<JobStore>((set) => ({
           ? [...state.logs, `[ERROR] ${job.error}`]
           : state.logs,
     })),
+
+  setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
 
   addLog: (line) =>
     set((state) => ({ logs: [...state.logs, line] })),
@@ -120,5 +133,5 @@ export const useJobStore = create<JobStore>((set) => ({
     })),
 
   reset: () =>
-    set({ jobId: null, nodes: initialNodes(), logs: [], clips: [], toasts: [] }),
+    set({ jobId: null, nodes: initialNodes(), logs: [], clips: [], connectionStatus: "idle", toasts: [] }),
 }));

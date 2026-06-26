@@ -34,6 +34,15 @@ class HuggingFaceLLM(BaseLLMProvider):
         
         chain = prompt | self.chat_model
         response = chain.invoke(input_variables)
-        
+
         # Extract content from AIMessage object
+        return response.content if hasattr(response, 'content') else str(response)
+
+    def complete(self, prompt: str) -> str:
+        """Single-turn completion for the parse() path.
+
+        Invokes the chat model with the raw string directly (no PromptTemplate) so
+        a JSON schema containing literal ``{`` / ``}`` doesn't break templating.
+        """
+        response = self.chat_model.invoke(prompt)
         return response.content if hasattr(response, 'content') else str(response)

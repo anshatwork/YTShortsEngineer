@@ -1,85 +1,128 @@
 "use client";
 
 import Link from "next/link";
+import { motion } from "framer-motion";
 import type { Job } from "@/types/api";
 import { formatRelative } from "@/lib/utils";
+import { useRerunJob } from "@/hooks/useRerunJob";
 import { JobStatusBadge } from "./JobStatusBadge";
 
 interface Props {
   jobs: Job[];
 }
 
-/**
- * Dense data-grid of jobs. Each row links to the job detail. The columns
- * are sized so the most-scanned values (status, ID, stage) sit on the
- * left where the eye lands first.
- */
 export function JobsTable({ jobs }: Props) {
+  const rerun = useRerunJob();
+
   if (jobs.length === 0) return <EmptyState />;
 
   return (
-    <section className="border border-ink bg-paper">
-      <Header />
-      <ul className="divide-y divide-rule-soft">
-        {jobs.map((job) => (
-          <li key={job.job_id}>
-            <Link
-              href={`/jobs/${job.job_id}`}
-              className="grid grid-cols-[112px_minmax(0,1.4fr)_minmax(0,1fr)_56px_72px_72px] items-center gap-3 px-4 h-10 hover:bg-paper-2/70 transition-colors"
+    <section>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {jobs.map((job, i) => {
+          const failed   = job.status === "failed";
+          const running  = job.status === "running";
+          const rerunning = rerun.isPending && rerun.variables === job.job_id;
+
+          return (
+            <motion.div
+              key={job.job_id}
+              initial={{ opacity: 0, y: 12 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-40px" }}
+              transition={{
+                duration: 0.55,
+                delay: Math.min(i, 5) * 0.05,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+              className="group relative border border-ink bg-paper flex flex-col overflow-hidden discover-card"
             >
-              <div className="flex items-center">
+              {/* Running-job indicator — thin animated top rule */}
+              {running && (
+                <div
+                  aria-hidden
+                  className="absolute top-0 inset-x-0 h-[2px] bg-ink ink-pulse"
+                />
+              )}
+
+              {/* Stretched link — z-0 so interactive children sit above it */}
+              <Link
+                href={`/jobs/${job.job_id}`}
+                aria-label={`Open job ${job.video_title || job.job_id}`}
+                className="absolute inset-0 z-0 hover:bg-paper-2/60 transition-colors"
+              />
+
+              {/* ── Status band ──────────────────────────────────────────── */}
+              <div className="pointer-events-none relative z-10 flex items-center justify-between px-4 py-3 border-b border-ink">
                 <JobStatusBadge status={job.status} />
+                <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft num-tabular">
+                  {formatRelative(job.created_at)}
+                </span>
               </div>
-              <div className="font-mono text-[12px] text-ink truncate">
-                {job.job_id}
+
+              {/* ── Body ─────────────────────────────────────────────────── */}
+              <div className="pointer-events-none relative z-10 px-4 pt-3 pb-3 flex-1 flex flex-col gap-1.5">
+                <h3
+                  className="font-display text-[15px] leading-snug text-ink line-clamp-2"
+                  title={job.video_title ?? job.job_id}
+                >
+                  {job.video_title || (
+                    <span className="font-mono text-[12px] text-ink-muted">{job.job_id}</span>
+                  )}
+                </h3>
+                <p className="font-mono text-[11px] tracking-[0.1em] text-ink-soft truncate">
+                  {stageLabel(job)}
+                </p>
               </div>
-              <div className="font-mono text-[11px] text-ink-muted truncate">
-                {stageLabel(job)}
+
+              {/* ── Footer strip ─────────────────────────────────────────── */}
+              <div className="relative z-10 flex items-center justify-between px-4 py-2.5 border-t border-rule-soft">
+                {/* Metadata */}
+                <div className="pointer-events-none flex items-center gap-4 font-mono text-[10px] tracking-[0.14em] text-ink-soft num-tabular uppercase">
+                  <span>{String(job.clips?.length ?? 0).padStart(2, "0")} clips</span>
+                  <span>{totalDuration(job)}</span>
+                </div>
+
+                {/* Action */}
+                {failed ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      rerun.mutate(job.job_id);
+                    }}
+                    disabled={rerunning}
+                    title="Re-run this job with the same settings"
+                    className="font-mono text-[10px] tracking-[0.15em] uppercase text-[var(--color-mark)] hover:text-ink disabled:opacity-50 transition-colors"
+                  >
+                    {rerunning ? "…" : "↻ Rerun"}
+                  </button>
+                ) : (
+                  <span className="pointer-events-none font-mono text-[10px] tracking-[0.2em] uppercase text-ink-soft group-hover:text-ink transition-colors flex items-center gap-1">
+                    Open
+                    <span className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
+                  </span>
+                )}
               </div>
-              <div className="font-mono text-[12px] text-ink-muted num-tabular text-right">
-                {String(job.clips?.length ?? 0).padStart(2, "0")}
-              </div>
-              <div className="font-mono text-[11px] text-ink-muted num-tabular text-right">
-                {totalDuration(job)}
-              </div>
-              <div className="font-mono text-[11px] text-ink-muted num-tabular text-right">
-                {formatRelative(job.created_at)}
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ul>
-      <Footer count={jobs.length} />
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Footer count */}
+      <p className="mt-4 font-mono text-[10px] tracking-[0.18em] text-ink-soft uppercase num-tabular">
+        {String(jobs.length).padStart(2, "0")} jobs
+      </p>
     </section>
   );
 }
 
-function Header() {
-  return (
-    <div className="grid grid-cols-[112px_minmax(0,1.4fr)_minmax(0,1fr)_56px_72px_72px] gap-3 px-4 h-8 items-center border-b border-ink bg-paper-2/60 font-mono text-[10px] tracking-[0.18em] text-ink-muted uppercase">
-      <span>Status</span>
-      <span>Job ID</span>
-      <span>Stage</span>
-      <span className="text-right">Clips</span>
-      <span className="text-right">Duration</span>
-      <span className="text-right">Created</span>
-    </div>
-  );
-}
-
-function Footer({ count }: { count: number }) {
-  return (
-    <div className="px-4 h-7 border-t border-rule-soft flex items-center justify-end font-mono text-[10px] tracking-[0.18em] text-ink-soft uppercase">
-      {String(count).padStart(2, "0")} jobs
-    </div>
-  );
-}
-
 function stageLabel(job: Job): string {
-  if (job.status === "queued") return "—";
-  if (job.status === "done")   return "complete";
-  if (job.status === "failed") return job.error ? "error: " + job.error.slice(0, 40) : "error";
-  return (job.current_node ?? "starting").toLowerCase();
+  if (job.status === "queued")  return "waiting in queue";
+  if (job.status === "done")    return "pipeline complete";
+  if (job.status === "failed")  return job.error ? job.error.slice(0, 60) : "pipeline error";
+  return (job.current_node ?? "starting").toLowerCase().replace(/_/g, " ");
 }
 
 function totalDuration(job: Job): string {
@@ -96,12 +139,11 @@ function totalDuration(job: Job): string {
 
 function EmptyState() {
   return (
-    <section className="border border-ink bg-paper px-6 py-16 flex flex-col items-center text-center gap-3">
-      <p className="font-mono text-[11px] tracking-[0.2em] text-ink-soft uppercase">
-        No jobs yet
-      </p>
-      <p className="text-sm text-ink-muted max-w-sm">
-        Paste a YouTube link into the command bar above and press <span className="font-mono text-ink">↵</span> to dispatch the first job.
+    <section className="border border-rule-soft py-16 px-6 flex flex-col items-center text-center gap-4">
+      <p className="kicker">No jobs yet</p>
+      <p className="font-display text-[clamp(1.25rem,2.5vw,1.75rem)] text-ink-muted leading-snug max-w-sm">
+        Paste a YouTube link into the command bar and press{" "}
+        <span className="font-mono text-ink">↵</span> to dispatch the first job.
       </p>
     </section>
   );

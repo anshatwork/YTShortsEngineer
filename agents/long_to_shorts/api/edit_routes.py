@@ -30,6 +30,9 @@ from agents.long_to_shorts.api.models import (
     EditJobListResponse,
     MusicEditRequest,
     SplitScreenEditRequest,
+    ThumbnailEditRequest,
+    TtsScriptRequest,
+    TtsScriptResponse,
     TTSEditRequest,
 )
 
@@ -53,6 +56,22 @@ async def submit_tts(
     http_request: Request,
     user_id: str = Depends(get_current_user_id),
 ) -> EditJob:
+    # At most one "destination" mode may be chosen: attach-to-clip, or behind a
+    # video (uploaded OR YouTube). With none, a standalone audio file is produced.
+    modes = [
+        bool(body.attach_to_clip_id),
+        bool(body.video_upload_id),
+        bool(body.video_url),
+    ]
+    if sum(modes) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Provide at most one of {attach_to_clip_id, video_upload_id, "
+                "video_url}."
+            ),
+        )
+
     if body.attach_to_clip_id:
         if not body.parent_job_id:
             raise HTTPException(
@@ -83,10 +102,44 @@ async def submit_tts(
     )
 
     from agents.long_to_shorts.api.edit_runner import run_tts_edit_job
-    http_request.app.state.executor.submit(
+    http_request.app.state.task_queue.enqueue(
         run_tts_edit_job, edit_job.edit_job_id, body
     )
     return edit_job
+
+
+# ---------------------------------------------------------------------------
+# POST /edit/tts/script  (synchronous — expand a summary into a narration script)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/tts/script",
+    response_model=TtsScriptResponse,
+    summary="Generate a narration script from a summary (Claude/Qwen) for TTS",
+)
+async def submit_tts_script(
+    body: TtsScriptRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> TtsScriptResponse:
+    from agents.long_to_shorts.api.edit_runner import generate_tts_script
+
+    try:
+        script = generate_tts_script(
+            body.summary, target_seconds=body.target_seconds, tone=body.tone
+        )
+    except Exception as exc:  # noqa: BLE001 — surface LLM/provider failures cleanly
+        logger.exception("TTS script generation failed for user %s: %s", user_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Script generation failed: {exc}",
+        )
+
+    if not script:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Script generation returned empty text.",
+        )
+    return TtsScriptResponse(script=script)
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +186,51 @@ async def submit_music(
     )
 
     from agents.long_to_shorts.api.edit_runner import run_music_edit_job
-    http_request.app.state.executor.submit(
+    http_request.app.state.task_queue.enqueue(
         run_music_edit_job, edit_job.edit_job_id, body
+    )
+    return edit_job
+
+
+# ---------------------------------------------------------------------------
+# POST /edit/generate-thumbnail
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/generate-thumbnail",
+    response_model=EditJob,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Generate an AI-directed thumbnail image for an existing clip",
+)
+async def submit_thumbnail(
+    body: ThumbnailEditRequest,
+    http_request: Request,
+    user_id: str = Depends(get_current_user_id),
+) -> EditJob:
+    clip = job_store.get_clip_for_user(body.parent_job_id, body.clip_id, user_id)
+    if clip is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Clip '{body.clip_id}' not found under job "
+                f"'{body.parent_job_id}'."
+            ),
+        )
+
+    edit_job = edit_job_store.create(
+        "thumbnail",
+        user_id=user_id,
+        parent_job_id=body.parent_job_id,
+        clip_id=body.clip_id,
+    )
+    logger.info(
+        "Edit job %s queued — op=thumbnail clip=%s user=%s",
+        edit_job.edit_job_id, body.clip_id, user_id,
+    )
+
+    from agents.long_to_shorts.api.edit_runner import run_thumbnail_edit_job
+    http_request.app.state.task_queue.enqueue(
+        run_thumbnail_edit_job, edit_job.edit_job_id, body
     )
     return edit_job
 
@@ -169,15 +265,27 @@ async def submit_split_screen(
             ),
         )
 
-    clip = job_store.get_clip_for_user(body.parent_job_id, body.clip_id, user_id)
-    if clip is None:
+    # Foreground (top half): standalone upload, OR an existing clip — exactly one.
+    has_clip = bool(body.parent_job_id and body.clip_id)
+    if bool(body.foreground_upload_id) == has_clip:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"Clip '{body.clip_id}' not found under job "
-                f"'{body.parent_job_id}'."
+                "Provide either foreground_upload_id (standalone) or both "
+                "parent_job_id and clip_id (from an existing clip), not both/neither."
             ),
         )
+
+    if has_clip:
+        clip = job_store.get_clip_for_user(body.parent_job_id, body.clip_id, user_id)
+        if clip is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"Clip '{body.clip_id}' not found under job "
+                    f"'{body.parent_job_id}'."
+                ),
+            )
 
     edit_job = edit_job_store.create(
         "split_screen",
@@ -191,7 +299,7 @@ async def submit_split_screen(
     )
 
     from agents.long_to_shorts.api.edit_runner import run_split_screen_edit_job
-    http_request.app.state.executor.submit(
+    http_request.app.state.task_queue.enqueue(
         run_split_screen_edit_job, edit_job.edit_job_id, body
     )
     return edit_job

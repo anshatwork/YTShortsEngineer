@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useSubmitJob } from "@/hooks/useSubmitJob";
 import { isValidYouTubeUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import type { ClipMode, JobRequest, SubtitlePosition, SubtitleSize } from "@/types/api";
+import type { ClipMode, JobRequest, SubtitlePosition, SubtitleSize, ThumbnailStyle } from "@/types/api";
 
 type Status = "idle" | "typing" | "invalid" | "submitting";
 
@@ -15,10 +15,13 @@ type Status = "idle" | "typing" | "invalid" | "submitting";
  */
 export function CommandBar() {
   const [url, setUrl] = useState("");
+  const [userContext, setUserContext] = useState("");
   const [topN, setTopN] = useState(3);
   const [clipMode, setClipMode] = useState<ClipMode>("portrait");
   const [addIntro, setAddIntro] = useState(true);
   const [addTopText, setAddTopText] = useState(false);
+  const [addThumbnail, setAddThumbnail] = useState(false);
+  const [thumbnailStyle, setThumbnailStyle] = useState<ThumbnailStyle>("auto");
   const [addSubtitles, setAddSubtitles] = useState(false);
   const [subtitlePosition, setSubtitlePosition] = useState<SubtitlePosition>("bottom");
   const [subtitleSize, setSubtitleSize] = useState<SubtitleSize>("medium");
@@ -45,7 +48,10 @@ export function CommandBar() {
       subtitle_position: subtitlePosition,
       subtitle_size: subtitleSize,
       add_top_text: addTopText,
+      add_thumbnail: addThumbnail,
+      thumbnail_style: thumbnailStyle,
       add_intro: addIntro,
+      user_context: userContext.trim() || undefined,
     };
     mutate(body);
   };
@@ -92,6 +98,28 @@ export function CommandBar() {
         </button>
       </form>
 
+      {/* Context row — optional creator guidance for the LLM */}
+      <div className="flex items-stretch h-11 border-b border-rule-soft">
+        <div className="flex items-center pl-4 pr-3 text-ink-soft font-mono text-[13px] select-none">
+          //
+        </div>
+        <input
+          type="text"
+          value={userContext}
+          onChange={(e) => setUserContext(e.target.value)}
+          placeholder="optional context — steers titles, hooks & thumbnails (e.g. 'deep dive on AI agents')"
+          autoComplete="off"
+          maxLength={500}
+          disabled={isPending}
+          className="flex-1 bg-transparent border-0 outline-none font-mono text-[13px] text-ink placeholder:text-ink-soft py-0"
+        />
+        {userContext.length > 0 && (
+          <div className="hidden sm:flex items-center px-4 font-mono text-[11px] tracking-[0.14em] text-ink-soft border-l border-rule-soft">
+            {userContext.length}/500
+          </div>
+        )}
+      </div>
+
       {/* Inline config row */}
       <div className="flex flex-wrap items-stretch divide-x divide-rule-soft text-[11px] font-mono tracking-[0.14em]">
         <Stepper
@@ -126,6 +154,27 @@ export function CommandBar() {
           onChange={setAddTopText}
           disabled={isPending}
         />
+        <ChipToggle
+          label="THUMB"
+          checked={addThumbnail}
+          onChange={setAddThumbnail}
+          disabled={isPending}
+        />
+        {addThumbnail && (
+          <Segmented
+            label="STYLE"
+            options={[
+              { value: "auto", label: "AUTO" },
+              { value: "bubble", label: "BUBBLE" },
+              { value: "highlight", label: "HILITE" },
+              { value: "box", label: "BOX" },
+              { value: "plain", label: "PLAIN" },
+            ]}
+            value={thumbnailStyle}
+            onChange={setThumbnailStyle}
+            disabled={isPending}
+          />
+        )}
         <ChipToggle
           label="SUBS"
           checked={addSubtitles}

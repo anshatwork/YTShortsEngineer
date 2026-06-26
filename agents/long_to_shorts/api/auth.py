@@ -28,6 +28,7 @@ and we validate HMAC-SHA256 (HS256) locally — no network round-trip needed.
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 import jwt
 from jwt import PyJWKClient
@@ -74,6 +75,7 @@ def _decode_token(token: str) -> dict:
             signing_key,
             algorithms=["RS256", "ES256"],
             options={"require": ["sub", "exp"], "verify_aud": False},
+            leeway=timedelta(seconds=30),
         )
 
     # HS256 — validate with the symmetric JWT secret.
@@ -85,6 +87,7 @@ def _decode_token(token: str) -> dict:
         jwt_secret,
         algorithms=["HS256"],
         options={"require": ["sub", "exp"], "verify_aud": False},
+        leeway=timedelta(seconds=30),
     )
 
 

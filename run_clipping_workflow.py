@@ -41,6 +41,14 @@ Defaults
     top-text    = OFF  (enable with --top-text)
     clip-mode   = portrait 9:16  (switch to native res with --fullscreen)
 
+Environment variables
+---------------------
+    WHISPER_MAX_MINUTES  When a local video has no supplied transcript, Whisper
+                         auto-transcribes the audio. Unset/empty/0 (default)
+                         transcribes the FULL video; a positive integer caps
+                         transcription to that many minutes (faster, but clips
+                         can only come from within that window).
+
 How it works (YouTube URL path)
 --------------------------------
 1. Detects that the first argument is a YouTube URL.
@@ -214,7 +222,15 @@ def probe_video(video_path: str) -> dict:
     if not Path(video_path).exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    probe = ffmpeg.probe(video_path)
+    # Probing is a subprocess + I/O; cache it by the file's cheap signature so a
+    # re-run of the same video skips it. Cache failures fall through to a live probe.
+    from core.cache import get_cache
+    from core.cache.keys import file_signature
+    probe = get_cache().get_or_compute_json(
+        "ffprobe", _PROBE_CACHE_VERSION,
+        {"src": file_signature(video_path)},
+        lambda: ffmpeg.probe(video_path),
+    )
     fmt   = probe["format"]
     duration = float(fmt.get("duration", 0))
     size_mb  = int(fmt.get("size", 0)) / (1024 * 1024)
@@ -253,32 +269,93 @@ def probe_video(video_path: str) -> dict:
 # Shared Whisper helper (used by both paths as a fallback)
 # ------------------------------------------------------------------
 
-def _whisper_transcribe(video_path: str, max_minutes: int = 10) -> str:
+def _resolve_max_minutes() -> int | None:
     """
-    Auto-transcribe *video_path* using Whisper (base model).
-    Extracts the first *max_minutes* of audio, runs Whisper, and returns
-    the transcript string.
+    Resolve the WHISPER_MAX_MINUTES env var to a transcription cap.
+
+    Returns None (transcribe the FULL video) when unset / empty / 0 / invalid,
+    otherwise the positive integer minute cap.
+    """
+    raw = os.getenv("WHISPER_MAX_MINUTES", "").strip()
+    if not raw:
+        return None
+    try:
+        v = int(raw)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+# Cache versions — bump when an operation's logic changes in a way that should
+# invalidate previously-cached outputs (Part 2 / Part 3 contract).
+_PROBE_CACHE_VERSION = 1
+_WHISPER_CACHE_VERSION = 1
+
+
+def _whisper_transcribe(video_path: str, max_minutes: int | None = None) -> str:
+    """Cached wrapper around Whisper transcription.
+
+    Whisper (audio extraction + model load + inference) is one of the most
+    expensive steps in the pipeline and is fully determined by the source audio +
+    model + minute cap — an ideal cache. We key by the source file's signature so
+    re-processing the same video (or resuming a failed job) reuses the transcript.
+    """
+    if max_minutes is None:
+        max_minutes = _resolve_max_minutes()
+    model_name = os.getenv("WHISPER_MODEL", "base")
+
+    from core.cache import get_cache
+    from core.cache.keys import file_signature
+    inputs = {
+        "src": file_signature(video_path),
+        "max_minutes": max_minutes,
+        "model": model_name,
+    }
+    return get_cache().get_or_compute_json(
+        "whisper_transcribe", _WHISPER_CACHE_VERSION, inputs,
+        lambda: {"text": _whisper_transcribe_uncached(video_path, max_minutes, model_name)},
+    )["text"]
+
+
+def _whisper_transcribe_uncached(
+    video_path: str, max_minutes: int | None, model_name: str = "base",
+) -> str:
+    """
+    Auto-transcribe *video_path* using Whisper.
+
+    *max_minutes* caps how much audio is transcribed (None = full video).
+    Returns the transcript string. This is the uncached body; callers should go
+    through :func:`_whisper_transcribe` so results are memoized.
     """
     import ffmpeg as _ffmpeg
     import tempfile
 
-    warn(f"Auto-transcribing first {max_minutes} min of audio with Whisper …")
-    warn("This may take 30–120 seconds depending on hardware.")
+    if max_minutes is None:
+        warn("Auto-transcribing the FULL audio with Whisper …")
+        warn("This can take several minutes for long videos on CPU "
+             "(set WHISPER_MAX_MINUTES to cap it).")
+    else:
+        warn(f"Auto-transcribing first {max_minutes} min of audio with Whisper …")
+        warn("This may take 30–120 seconds depending on hardware.")
 
     tmp_audio = tempfile.mktemp(suffix=".wav")
     info(f"Extracting audio → {tmp_audio}")
+    audio_input = (
+        _ffmpeg.input(video_path, ss=0, t=max_minutes * 60)
+        if max_minutes is not None
+        else _ffmpeg.input(video_path)
+    )
     (
-        _ffmpeg
-        .input(video_path, ss=0, t=max_minutes * 60)
+        audio_input
         .output(tmp_audio, ac=1, ar=16000, format="wav")
         .overwrite_output()
         .run(capture_stdout=True, capture_stderr=True)
     )
-    ok(f"Audio extracted ({max_minutes} min segment)")
+    ok(f"Audio extracted ({f'{max_minutes} min segment' if max_minutes is not None else 'full video'})")
 
     import whisper
-    info("Loading Whisper base model …")
-    model = whisper.load_model("base")
+    info(f"Loading Whisper {model_name} model …")
+    model = whisper.load_model(model_name)
     info("Transcribing …")
     t0 = time.time()
     result = model.transcribe(tmp_audio)
@@ -300,7 +377,7 @@ def _whisper_transcribe(video_path: str, max_minutes: int = 10) -> str:
 # Step 2: Get transcript
 # ------------------------------------------------------------------
 
-def get_transcript(transcript_arg: str | None, video_path: str, max_minutes: int = 10) -> str:
+def get_transcript(transcript_arg: str | None, video_path: str, max_minutes: int | None = None) -> str:
     """
     Return a transcript string.
     Priority:
@@ -336,6 +413,8 @@ def run_pipeline(
     add_subtitles: bool = False,
     add_top_text: bool = False,
     add_intro: bool = True,
+    add_music: bool = False,
+    music_volume_db: float = -18.0,
     clip_mode: str = "portrait",
     subtitle_position: str = "bottom",
     subtitle_size: str = "medium",
@@ -350,7 +429,8 @@ def run_pipeline(
     info(f"Clip mode    : {clip_mode}")
     info(f"Options      : intro={'ON' if add_intro else 'OFF'}  "
          f"top-text={'ON' if add_top_text else 'OFF'}  "
-         f"subtitles={'ON' if add_subtitles else 'OFF'}")
+         f"subtitles={'ON' if add_subtitles else 'OFF'}  "
+         f"music={'ON' if add_music else 'OFF'}")
     if add_subtitles:
         info(f"Subtitle sty : position={subtitle_position}  size={subtitle_size}")
     if timed_transcript:
@@ -361,6 +441,7 @@ def run_pipeline(
     os.environ["ADD_INTRO"]      = "1" if add_intro      else "0"
     os.environ["ADD_TOP_TEXT"]   = "1" if add_top_text   else "0"
     os.environ["ADD_SUBTITLES"]  = "1" if add_subtitles  else "0"
+    os.environ["ADD_MUSIC"]      = "1" if add_music      else "0"
     os.environ["SUBTITLES_POSITION"] = subtitle_position
     os.environ["SUBTITLES_SIZE"]     = subtitle_size
 
@@ -373,6 +454,8 @@ def run_pipeline(
         "subtitle_position": subtitle_position,
         "subtitle_size":     subtitle_size,
         "add_intro":         add_intro,
+        "add_music":         add_music,
+        "music_volume_db":   music_volume_db,
         "clip_mode":         clip_mode,
         "timed_transcript":  timed_transcript or [],
         "analyzed_segments": [],
@@ -526,17 +609,40 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Default: portrait 9:16 (1080×1920) letterbox."
         ),
     )
+    parser.add_argument(
+        "--music",
+        action="store_true",
+        default=False,
+        dest="music",
+        help=(
+            "Mix the latest mood-matched background music under each clip. "
+            "ContentGenNode picks a mood and the asset layer fetches a track "
+            "(needs PIXABAY_API_KEY/FREESOUND_API_KEY or a warm assets/audio_cache)."
+        ),
+    )
+    parser.add_argument(
+        "--music-volume",
+        type=float,
+        default=-18.0,
+        dest="music_volume",
+        help="Background-music gain in dB vs. clip audio (default: -18.0). Only used with --music.",
+    )
 
     return parser
 
 
 def main():
+    from core.logging_config import configure_logging
+    configure_logging()
+
     parser = _build_arg_parser()
     args   = parser.parse_args()
 
     add_intro     = not args.no_intro
     add_subtitles = args.subtitles
     add_top_text  = args.top_text
+    add_music     = args.music
+    music_volume_db = args.music_volume
     clip_mode     = "fullscreen" if args.fullscreen else "portrait"
     subtitle_position = args.subtitle_position
     subtitle_size     = args.subtitle_size
@@ -563,6 +669,8 @@ def main():
         print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
         print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}"
               + (f"  (pos={subtitle_position}, size={subtitle_size})" if add_subtitles else ""))
+        print(f"  Music     : {'ON' if add_music else 'OFF'}"
+              + (f"  (vol={music_volume_db} dB)" if add_music else ""))
         print(SEP)
 
         try:
@@ -577,6 +685,8 @@ def main():
                 add_subtitles=add_subtitles,
                 add_top_text=add_top_text,
                 add_intro=add_intro,
+                add_music=add_music,
+                music_volume_db=music_volume_db,
                 clip_mode=clip_mode,
                 subtitle_position=subtitle_position,
                 subtitle_size=subtitle_size,
@@ -617,6 +727,8 @@ def main():
         print(f"  Top-text  : {'ON' if add_top_text else 'OFF'}")
         print(f"  Subtitles : {'ON' if add_subtitles else 'OFF'}"
               + (f"  (pos={subtitle_position}, size={subtitle_size})" if add_subtitles else ""))
+        print(f"  Music     : {'ON' if add_music else 'OFF'}"
+              + (f"  (vol={music_volume_db} dB)" if add_music else ""))
         print(SEP)
 
         try:
@@ -628,6 +740,8 @@ def main():
                 add_subtitles=add_subtitles,
                 add_top_text=add_top_text,
                 add_intro=add_intro,
+                add_music=add_music,
+                music_volume_db=music_volume_db,
                 clip_mode=clip_mode,
                 subtitle_position=subtitle_position,
                 subtitle_size=subtitle_size,

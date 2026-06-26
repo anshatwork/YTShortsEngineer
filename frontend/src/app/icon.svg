@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="YS">
+  <rect width="64" height="64" fill="#14110B"/>
+  <!-- hairline inset rule, echoing the editorial layout spine -->
+  <rect x="4.5" y="4.5" width="55" height="55" fill="none" stroke="#FBFAF5" stroke-opacity="0.45" stroke-width="1"/>
+  <text x="32" y="33" text-anchor="middle" dominant-baseline="central"
+        font-family="Georgia, 'Iowan Old Style', 'Times New Roman', serif"
+        font-weight="700" font-size="33" letter-spacing="-1.5" fill="#FBFAF5">YS</text>
+</svg>

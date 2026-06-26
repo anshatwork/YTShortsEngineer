@@ -45,8 +45,12 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   // Redirect unauthenticated visitors to /login, except for public routes.
+  // The marketing landing ("/") and contact page are intentionally public so
+  // logged-out visitors can learn what the app does before signing in.
   const pathname = request.nextUrl.pathname;
   const isPublicRoute =
+    pathname === "/" ||
+    pathname === "/contact" ||
     pathname === "/login" ||
     pathname.startsWith("/auth/") ||
     pathname === "/favicon.ico" ||

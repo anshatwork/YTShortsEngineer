@@ -70,6 +70,7 @@ class SupabaseJobStore:
         clips: Optional[List[ClipResult]] = None,
         error: Optional[str] = None,
         current_node: Optional[str] = None,
+        video_title: Optional[str] = None,
     ) -> Optional[JobStatus]:
         """Partial update via service-role key (bypasses RLS; safe from workers)."""
         patch = job_status_to_update(
@@ -77,6 +78,7 @@ class SupabaseJobStore:
             clips=clips,
             error=error,
             current_node=current_node,
+            video_title=video_title,
         )
         if not patch:
             return self.get(job_id)
@@ -126,6 +128,36 @@ class SupabaseJobStore:
         if not data:
             return None
         return row_to_job_status(data[0])
+
+    def get_request_for_user(
+        self, job_id: str, user_id: str
+    ) -> Optional[JobRequest]:
+        """Return the original JobRequest snapshot stored at submission time.
+
+        The full request is persisted in the ``request`` JSONB column (see
+        mappers.job_status_to_insert); this rehydrates it so a failed job can be
+        re-run with the exact same parameters. Ownership is enforced via user_id.
+        """
+        client = get_worker_client()
+        result = (
+            client.table(_TABLE)
+            .select("request")
+            .eq("job_id", job_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        data = result.data
+        if not data:
+            return None
+        raw = data[0].get("request")
+        if not raw:
+            return None
+        try:
+            return JobRequest(**raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not rehydrate request for job %s: %s", job_id, exc)
+            return None
 
     def list_for_user(
         self,

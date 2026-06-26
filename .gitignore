@@ -38,3 +38,56 @@ teat/*
 # Whisper model cache
 ~/.cache/whisper/
 assets/*
+
+# Python tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# Python build artifacts / packaging
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+env/
+ENV/
+
+# Local content-addressable cache (CAS blobstore + sqlite index at repo root).
+# Rooted so it does NOT match the `core/cache/` source package.
+/cache/
+
+# Node (root-level safeguard; the frontend has its own .gitignore)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local env overrides (keep secrets out)
+.env.local
+.env.*.local
+*.env
+
+# Misc OS/editor
+*~
+*.bak
+*.tmp
+
+# Agent / editor tooling (local, not shared)
+.codegraph/
+.claude/
+.cursor/
+.gemini/
+.mcp.json

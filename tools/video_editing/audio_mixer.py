@@ -36,6 +36,7 @@ def mix_background_music(
     music_path: str | Path,
     output_path: str | Path,
     volume_db: float = -18.0,
+    music_start_sec: float = 0.0,
 ) -> Path:
     """Mix *music_path* under the audio track of *video_path*.
 
@@ -48,6 +49,9 @@ def mix_background_music(
         output_path: Where to write the mixed mp4. Parent dir is created.
         volume_db:   Music gain relative to source audio (negative = quieter).
                      -18 dB is a sensible default for narration-friendly mix.
+        music_start_sec: Seconds into the song to begin the clip-length window,
+                     so the user can pick e.g. the chorus instead of the intro.
+                     Past the song end the loop wraps around. 0 = from the start.
 
     Returns:
         The output_path as a Path (so callers can chain).
@@ -74,11 +78,19 @@ def mix_background_music(
         f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]"
     )
 
+    # Music input options. `-ss` seeks into the song (chosen segment); it must
+    # sit immediately before the music `-i`. `-stream_loop -1` loops so the
+    # window always fills the clip even near the song's end.
+    music_in: list[str] = ["-stream_loop", "-1"]
+    if music_start_sec and music_start_sec > 0:
+        music_in += ["-ss", f"{music_start_sec:.3f}"]
+    music_in += ["-i", str(music)]
+
     cmd: Sequence[str] = [
         _resolve_ffmpeg_bin(),
         "-y",
         "-i", str(video),
-        "-stream_loop", "-1", "-i", str(music),
+        *music_in,
         "-filter_complex", filter_complex,
         "-map", "0:v",
         "-map", "[a]",
@@ -90,8 +102,8 @@ def mix_background_music(
         str(out),
     ]
 
-    logger.info("Mixing music (vol=%.1f dB): %s + %s -> %s",
-                volume_db, video.name, music.name, out.name)
+    logger.info("Mixing music (vol=%.1f dB, start=%.1fs): %s + %s -> %s",
+                volume_db, music_start_sec, video.name, music.name, out.name)
     result = subprocess.run(
         cmd, check=False, capture_output=True, text=True,
     )

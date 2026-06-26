@@ -72,6 +72,13 @@ class ClipObject(TypedDict):
     summary: Optional[str]             # 1-sentence YouTube Shorts description
     hook_text: Optional[str]           # Short overlay text ≤55 chars for TopTextNode
     hashtags: Optional[List[str]]      # 5 SEO hashtags (no # prefix)
+    thumbnail_path: Optional[str]      # Absolute path to the generated thumbnail (ThumbnailNode)
+    # --- Background music recommendation (ContentGenNode; mixed by MusicAttachNode) ---
+    music_theme: Optional[str]         # AudioTheme value matched to the clip's mood
+    music_path: Optional[str]          # Local path to the recommended track (cached)
+    music_title: Optional[str]         # Human-readable track title
+    music_source: Optional[str]        # Provider name, e.g. "pixabay" | "freesound"
+    music_attribution: Optional[str]   # License/credit string when the source requires it
 
 
 class LongToShortsState(TypedDict, total=False):
@@ -80,6 +87,7 @@ class LongToShortsState(TypedDict, total=False):
     source_video_path: str              # Local path to the long-form video file
     transcript: str                     # Full text transcript of the video
     top_n_clips: int                    # Max clips to extract (default: 5)
+    user_context: Optional[str]         # Optional creator guidance to steer LLM copy
 
     # --- Job tracking (populated by api/runner.py; absent in CLI runs) ---
     job_id: str                         # Job UUID for log correlation
@@ -95,6 +103,10 @@ class LongToShortsState(TypedDict, total=False):
     add_top_text: bool                  # Overlay hook text at top of clip (TopTextNode)
     add_subtitles: bool                 # Burn subtitles into clip (SubtitlesNode)
     add_intro: bool                     # Prepend title-card intro (IntroAttachNode)
+    add_music: bool                     # Mix recommended background music (MusicAttachNode)
+    add_thumbnail: bool                 # Generate an AI-directed thumbnail per clip (ThumbnailNode)
+    thumbnail_style: str                # Caption style: "auto"|"bubble"|"highlight"|"box"|"plain"
+    music_volume_db: float              # Music gain relative to clip audio (default -18.0)
 
     # --- Subtitle styling (SubtitlesNode; only used when add_subtitles) ---
     subtitle_position: str              # "top" | "middle" | "bottom"  (default "bottom")

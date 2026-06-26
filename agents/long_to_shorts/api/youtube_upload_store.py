@@ -28,6 +28,7 @@ class _MemoryYouTubeUploadStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: Dict[str, YouTubeUploadJob] = {}
+        self._idem: Dict[str, str] = {}  # upload_id -> idempotency_key
 
     def create(
         self,
@@ -79,6 +80,23 @@ class _MemoryYouTubeUploadStore:
             self._jobs[upload_id] = updated
             return updated
 
+    def set_idempotency_key(self, upload_id: str, key: str) -> None:
+        with self._lock:
+            self._idem[upload_id] = key
+
+    def find_completed_by_idempotency(
+        self, user_id: str, key: str, *, exclude_upload_id: Optional[str] = None
+    ) -> Optional[YouTubeUploadJob]:
+        """Return a prior COMPLETED upload with the same idempotency key, if any."""
+        with self._lock:
+            for uid, k in self._idem.items():
+                if k != key or uid == exclude_upload_id:
+                    continue
+                job = self._jobs.get(uid)
+                if job and job.status == "done" and job.video_id:
+                    return deepcopy(job)
+        return None
+
     def get(self, upload_id: str) -> Optional[YouTubeUploadJob]:
         with self._lock:
             job = self._jobs.get(upload_id)
@@ -112,8 +130,11 @@ def _make_youtube_upload_store():
         from agents.long_to_shorts.api.db.youtube_upload_store import (
             supabase_youtube_upload_store,
         )
-        return supabase_youtube_upload_store
-    return _MemoryYouTubeUploadStore()
+        inner = supabase_youtube_upload_store
+    else:
+        inner = _MemoryYouTubeUploadStore()
+    from agents.long_to_shorts.api.event_store import EventEmittingStore
+    return EventEmittingStore(inner, channel_prefix="upload", id_attr="upload_id")
 
 
 youtube_upload_store = _make_youtube_upload_store()

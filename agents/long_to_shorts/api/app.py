@@ -51,39 +51,110 @@ _WORKER_THREADS = 2  # concurrent pipeline jobs
 # ---------------------------------------------------------------------------
 
 def _configure_project_loggers() -> None:
-    """Make our INFO logs visible under uvicorn.
+    """Install the central, context-aware logging configuration.
 
-    Uvicorn configures handlers on its own loggers (`uvicorn`, `uvicorn.access`,
-    `uvicorn.error`) but leaves the root logger at WARNING with no handlers.
-    Without this, every `[job:abc] analyze_video START` line we emit gets
-    dropped on the floor. Setting these loggers to INFO and letting them
-    propagate makes them flow into uvicorn's stderr handler.
+    See ``core.logging_config.configure_logging``: root console + rotating
+    ``logs/app.log`` handlers with a ``[job:<id>|<node>]`` formatter, app
+    loggers at LOG_LEVEL, and third-party request noise quieted to WARNING.
+    Idempotent, so it coexists with uvicorn's own handlers.
     """
-    for name in ("agents", "agents.long_to_shorts", "longtoshorts.access"):
-        lg = logging.getLogger(name)
-        lg.setLevel(logging.INFO)
-        lg.propagate = True
-    # Ensure the root logger has at least one handler so propagated records
-    # actually print when uvicorn isn't the one running us (e.g. TestClient).
-    if not logging.getLogger().handlers:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        )
+    from core.logging_config import configure_logging
+
+    configure_logging()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create thread-pool on startup; shut it down on exit."""
+    """Wire the execution layer on startup; tear it down on exit.
+
+    - Capture the running event loop on the event bus so worker threads can
+      push real-time progress events to SSE subscribers (see core.execution).
+    - Expose the task queue + event bus on app.state for route handlers.
+    """
+    import asyncio
+    from core.execution import get_event_bus, get_task_queue
+
     _configure_project_loggers()
     logger.info("LongToShorts API starting — %d worker thread(s)", _WORKER_THREADS)
+
+    event_bus = get_event_bus()
+    if hasattr(event_bus, "bind_loop"):
+        event_bus.bind_loop(asyncio.get_running_loop())
+    app.state.event_bus = event_bus
+
+    task_queue = get_task_queue()
+    app.state.task_queue = task_queue
+    # Backwards-compat: existing routes still reference app.state.executor.
     app.state.executor = ThreadPoolExecutor(max_workers=_WORKER_THREADS)
+
+    # Self-warming music cache: refresh once on startup, then on a timer. The
+    # actual work runs on the task queue (off the event loop); this coroutine
+    # just paces it. See tools/assets/refresh.refresh_music_cache.
+    music_refresh_task = asyncio.create_task(_music_cache_refresh_loop(task_queue))
+
+    # Self-warming trending pool: same pattern — crawl on startup, then on a
+    # timer, so /discover/suggestions always has a fresh pool to personalize.
+    trending_crawler_task = asyncio.create_task(_trending_crawler_loop(task_queue))
+
     try:
         yield
     finally:
         logger.info("LongToShorts API shutting down — waiting for running jobs …")
+        music_refresh_task.cancel()
+        trending_crawler_task.cancel()
+        for _task in (music_refresh_task, trending_crawler_task):
+            try:
+                await _task
+            except asyncio.CancelledError:
+                pass
         app.state.executor.shutdown(wait=True)
+        task_queue.shutdown(wait=True)
         logger.info("Shutdown complete.")
+
+
+async def _music_cache_refresh_loop(task_queue) -> None:
+    """Enqueue a music-cache refresh on startup and every N hours thereafter."""
+    import asyncio
+
+    from tools.assets.refresh import refresh_music_cache
+
+    try:
+        hours = max(1, int(os.getenv("MUSIC_CACHE_REFRESH_HOURS", "24")))
+    except ValueError:
+        hours = 24
+
+    while True:
+        try:
+            task_queue.enqueue(refresh_music_cache)
+        except RuntimeError as exc:
+            # Benign during teardown (e.g. test TestClients sharing a queue
+            # singleton that was already shut down). Not worth a traceback.
+            logger.debug("skipped music cache refresh enqueue: %s", exc)
+        except Exception:  # noqa: BLE001 — never let the loop die on a transient error
+            logger.exception("failed to enqueue music cache refresh")
+        await asyncio.sleep(hours * 3600)
+
+
+async def _trending_crawler_loop(task_queue) -> None:
+    """Enqueue a trending-pool crawl on startup and every N hours thereafter."""
+    import asyncio
+
+    from agents.long_to_shorts.trending_crawler import crawl_trending_pool
+
+    try:
+        hours = max(1, int(os.getenv("TRENDING_CRAWLER_HOURS", "6")))
+    except ValueError:
+        hours = 6
+
+    while True:
+        try:
+            task_queue.enqueue(crawl_trending_pool)
+        except RuntimeError as exc:
+            # Benign during teardown (shared queue singleton already shut down).
+            logger.debug("skipped trending crawl enqueue: %s", exc)
+        except Exception:  # noqa: BLE001 — never let the loop die on a transient error
+            logger.exception("failed to enqueue trending crawl")
+        await asyncio.sleep(hours * 3600)
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +232,17 @@ async def _log_requests(request: Request, call_next):
 from agents.long_to_shorts.api.routes import router  # noqa: E402
 from agents.long_to_shorts.api.edit_routes import router as edit_router  # noqa: E402
 from agents.long_to_shorts.api.youtube_routes import router as youtube_router  # noqa: E402
+from agents.long_to_shorts.api.discover_routes import router as discover_router  # noqa: E402
+from agents.long_to_shorts.api.music_routes import router as music_router  # noqa: E402
+from agents.long_to_shorts.api.events_routes import router as events_router  # noqa: E402
 
 app.include_router(router, prefix="/api/v1", tags=["Long-to-Shorts"])
 app.include_router(edit_router, prefix="/api/v1/edit", tags=["Edit"])
 app.include_router(youtube_router, prefix="/api/v1/youtube", tags=["YouTube"])
+app.include_router(discover_router, prefix="/api/v1/discover", tags=["Discover"])
+app.include_router(music_router, prefix="/api/v1/music", tags=["Music"])
+# SSE streams (real-time progress). Full paths live on the router, mounted at /api/v1.
+app.include_router(events_router, prefix="/api/v1", tags=["Events"])
 
 # ---------------------------------------------------------------------------
 # Static files — serve produced artifacts (clips + edit outputs) to the frontend
@@ -173,6 +251,14 @@ app.include_router(youtube_router, prefix="/api/v1/youtube", tags=["YouTube"])
 _OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output")).resolve()
 _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(_OUTPUT_DIR)), name="static")
+
+# Cached music library — browsable/previewable trending tracks (see music_routes).
+# StaticFiles honours HTTP range requests, so <audio> seeking works. This is the
+# single serving touch-point: a later S3/MinIO swap replaces MusicTrack.preview_url
+# with a blob-store URL (BLOB_STORE_BACKEND), leaving the frontend contract intact.
+_MUSIC_LIBRARY_DIR = (Path(os.getenv("ASSET_CACHE_DIR", "assets")) / "audio_cache").resolve()
+_MUSIC_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/library", StaticFiles(directory=str(_MUSIC_LIBRARY_DIR)), name="library")
 
 
 # ---------------------------------------------------------------------------
