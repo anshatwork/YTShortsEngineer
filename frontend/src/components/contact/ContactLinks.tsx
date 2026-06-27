@@ -3,9 +3,9 @@ import { Reveal } from "@/components/landing/Reveal";
 // NOTE: lucide-react in this repo ships no brand glyphs, so GitHub/LinkedIn
 // marks are inline SVG. Email uses an inline envelope for visual consistency.
 // TODO(ansh): replace the GitHub/LinkedIn placeholder URLs with your real ones.
-const EMAIL = "anshc@adobe.com";
-const GITHUB_URL = "https://github.com/anshchawla"; // TODO: real handle
-const LINKEDIN_URL = "https://www.linkedin.com/in/ansh-chawla"; // TODO: real handle
+const EMAIL = "ansh.work2002@gmail.com";
+const GITHUB_URL = "https://github.com/anshatwork"; // TODO: real handle
+const LINKEDIN_URL = "https://www.linkedin.com/in/anshchawla1"; // TODO: real handle
 
 type Channel = {
   label: string;

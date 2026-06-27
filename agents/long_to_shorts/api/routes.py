@@ -61,6 +61,10 @@ async def submit_job(
             detail="Provide EITHER 'youtube_url' OR 'video_path', not both.",
         )
 
+    # Enforce the caller's monthly plan quota before doing any work (402 if hit).
+    from agents.long_to_shorts.api.quota import enforce_quota
+    enforce_quota(user_id)
+
     job = job_store.create(body, user_id=user_id)
     logger.info(
         "Job %s queued — user=%s source=%s",
@@ -70,7 +74,8 @@ async def submit_job(
     from agents.long_to_shorts.api.runner import run_job  # late import (heavy deps)
     # Decoupled from the concrete executor: the TaskQueue abstraction lets this
     # move to Celery/Temporal later without touching routes (core/execution).
-    http_request.app.state.task_queue.enqueue(run_job, job.job_id, body)
+    # user_id is threaded through so the run can use the caller's BYOK key.
+    http_request.app.state.task_queue.enqueue(run_job, job.job_id, body, user_id)
 
     return job
 
@@ -113,6 +118,10 @@ async def rerun_job(
             ),
         )
 
+    # A rerun is a new job — it counts against the plan quota too.
+    from agents.long_to_shorts.api.quota import enforce_quota
+    enforce_quota(user_id)
+
     job = job_store.create(original, user_id=user_id)
     logger.info(
         "Job %s queued as rerun of %s — user=%s source=%s",
@@ -120,7 +129,7 @@ async def rerun_job(
     )
 
     from agents.long_to_shorts.api.runner import run_job  # late import (heavy deps)
-    http_request.app.state.task_queue.enqueue(run_job, job.job_id, original)
+    http_request.app.state.task_queue.enqueue(run_job, job.job_id, original, user_id)
 
     return job
 
@@ -168,3 +177,27 @@ async def list_jobs(
 ) -> JobListResponse:
     jobs = job_store.list_for_user(user_id, limit=limit, offset=offset)
     return JobListResponse(jobs=jobs, total=len(jobs))
+
+
+# ---------------------------------------------------------------------------
+# GET /usage  —  current plan + this month's usage (for the UI quota meter)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/usage",
+    summary="Current plan, jobs used this month, and remaining quota",
+)
+async def get_usage(user_id: str = Depends(get_current_user_id)) -> dict:
+    from agents.long_to_shorts.api.quota import quota_enforced, usage_snapshot
+
+    if not quota_enforced():
+        # Dev / unmetered deployments — report the free plan with no cap applied.
+        return {"plan": "free", "used": 0, "limit": None, "remaining": None, "enforced": False}
+    plan, used, limit = usage_snapshot(user_id)
+    return {
+        "plan": plan,
+        "used": used,
+        "limit": limit,
+        "remaining": max(0, limit - used),
+        "enforced": True,
+    }

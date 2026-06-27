@@ -1,0 +1,57 @@
+# Single-host deploy: API + workers behind Caddy (auto-HTTPS).
+#
+# This is the cheapest launch topology — one EC2 running both services.
+# The GPU Ollama box and Supabase live OUTSIDE this compose file:
+#   - OLLAMA_BASE_URL must point at the GPU EC2's private IP (set in .env).
+#   - SUPABASE_* point at the managed Supabase project.
+#
+# Usage on the EC2:
+#   docker compose up -d --build
+#
+# Secrets come from a local .env (gitignored) on the box, or are injected from
+# SSM/Secrets Manager at boot. Never commit .env.
+services:
+  api:
+    build: .
+    image: ytshorts-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Ephemeral scratch inside the container; finished artifacts go to S3.
+      OUTPUT_DIR: /tmp/output
+      ASSET_CACHE_DIR: /tmp/assets
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    expose:
+      - "8000"
+    # No host port published — only Caddy talks to it over the compose network.
+    volumes:
+      # Persist logs to the host so they survive container restarts (CloudWatch
+      # agent on the host tails these; the container also logs to stdout).
+      - ./logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Set DOMAIN + ACME_EMAIL in .env so Caddy provisions a Let's Encrypt cert.
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env (e.g. api.example.com)}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

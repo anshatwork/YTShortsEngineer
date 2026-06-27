@@ -31,21 +31,54 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 
-def run_job(job_id: str, request: "JobRequest") -> None:
+def run_job(job_id: str, request: "JobRequest", user_id: str | None = None) -> None:
     """Execute a job, teeing all of its logs into ``logs/jobs/<job_id>.log``.
 
     Thin wrapper around :func:`_run_job_impl` that binds the per-job logging
     context (see ``core.logging_config.job_log_context``) so every log line for
     this run — including those from nodes, the LLM and ffmpeg — is correlated
     and captured in a single self-contained file.
+
+    *user_id* (when supplied) lets the run pick up that user's BYOK LLM
+    credential so their job uses their own key and bypasses our GPU.
     """
     from core.logging_config import job_log_context
 
     with job_log_context(job_id):
-        _run_job_impl(job_id, request)
+        _run_job_impl(job_id, request, user_id)
 
 
-def _run_job_impl(job_id: str, request: "JobRequest") -> None:
+def _resolve_byok_credential(user_id: str | None, job_id: str):
+    """Return the user's BYOK LLMCredential, or None to use our default provider.
+
+    Any lookup/decrypt failure degrades gracefully to the default (our GPU) — a
+    billing/credential hiccup must never fail an otherwise-valid job. Never logs
+    the raw key.
+    """
+    if not user_id:
+        return None
+    try:
+        from agents.long_to_shorts.api.db.user_llm_credentials_store import (
+            user_llm_credential_store,
+        )
+        from tools.llm.credentials import redact_key
+
+        cred = user_llm_credential_store.get(user_id)
+        if cred is not None:
+            logger.info(
+                "[job:%s] BYOK credential found — provider=%s key=%s (our GPU bypassed)",
+                job_id, cred.provider, redact_key(cred.api_key),
+            )
+        return cred
+    except Exception as exc:  # noqa: BLE001 — fall back to default provider
+        logger.warning(
+            "[job:%s] BYOK lookup failed (%s); using default provider.",
+            job_id, type(exc).__name__,
+        )
+        return None
+
+
+def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None) -> None:
     """
     Execute the Long-to-Shorts pipeline for *request* and persist results to
     the job store.  Designed to be called from a background thread.
@@ -168,9 +201,17 @@ def _run_job_impl(job_id: str, request: "JobRequest") -> None:
             "error":             None,
         }
 
+        # Resolve the caller's BYOK credential (if any) and bind it for the whole
+        # pipeline run: every get_llm() inside the nodes then uses the user's key
+        # and provider instead of our GPU Ollama default. None => default path.
+        from tools.llm.credentials import llm_credential_context
+
+        byok_credential = _resolve_byok_credential(user_id, job_id)
+
         t0 = time.time()
         logger.info("[job:%s] invoking LangGraph pipeline …", job_id)
-        final_state = long_to_shorts_app.invoke(initial_state)
+        with llm_credential_context(byok_credential):
+            final_state = long_to_shorts_app.invoke(initial_state)
         elapsed = time.time() - t0
 
         # ----------------------------------------------------------------

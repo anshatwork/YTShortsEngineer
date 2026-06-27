@@ -35,10 +35,14 @@ def _truthy(name: str, default: str = "true") -> bool:
     return os.getenv(name, default).lower() not in ("0", "false", "no", "")
 
 
-def _construct(provider: str) -> BaseLLMProvider:
+def _construct(provider: str, credential=None) -> BaseLLMProvider:
+    """Build a provider. When *credential* (an LLMCredential) is given, construct
+    the user's provider with their own API key (BYOK) instead of our env key."""
     if provider == "claude":
         from tools.llm.anthropic_provider import AnthropicLLM
 
+        if credential is not None:
+            return AnthropicLLM(model=credential.model, api_key=credential.api_key)
         return AnthropicLLM()
     if provider == "ollama":
         from tools.llm.ollama import OllamaLLM
@@ -108,7 +112,24 @@ class FallbackLLM(BaseLLMProvider):
 
 
 def get_llm() -> BaseLLMProvider:
-    """Return the configured LLM provider, wrapped in a fallback chain if enabled."""
+    """Return the LLM provider for the current job.
+
+    If a BYOK credential is bound to this thread (see
+    ``tools.llm.credentials.llm_credential_context``), build the user's provider
+    with their key and do **not** fall back to our Ollama GPU — a user's bad key
+    must never silently spend our compute. Otherwise use the env-configured
+    provider (the GPU Ollama default in production), with the usual fallback chain.
+    """
+    from tools.llm.credentials import current_llm_credential, redact_key
+
+    cred = current_llm_credential.get()
+    if cred is not None:
+        logger.info(
+            "BYOK LLM in use — provider=%s key=%s (our GPU bypassed)",
+            cred.provider, redact_key(cred.api_key),
+        )
+        return _construct(cred.provider, credential=cred)
+
     provider = os.getenv("LLM_PROVIDER", "claude").lower()
     fallback_enabled = _truthy("ENABLE_LLM_FALLBACK")
 

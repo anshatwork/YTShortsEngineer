@@ -1,0 +1,31 @@
+# Caddy reverse proxy — terminates TLS (auto Let's Encrypt) and forwards to the
+# API container. {$DOMAIN} / {$ACME_EMAIL} are read from the environment (set in
+# .env, passed through docker-compose).
+#
+# This fronts ONLY the backend API. The Next.js frontend is hosted separately
+# (Cloudflare Pages / Amplify) and calls this domain as NEXT_PUBLIC_API_URL.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# SSE endpoints stream progress — disable proxy buffering so events flush
+	# immediately and keep the connection long-lived.
+	@sse path /api/v1/events* /api/v1/*/events*
+	reverse_proxy @sse api:8000 {
+		flush_interval -1
+	}
+
+	reverse_proxy api:8000
+
+	# Don't leak the server banner.
+	header -Server
+
+	log {
+		output stdout
+		format console
+	}
+}

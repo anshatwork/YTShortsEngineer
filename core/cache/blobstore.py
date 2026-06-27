@@ -90,9 +90,15 @@ class LocalBlobStore(BlobStore):
 def make_blob_store(cache_dir: str | Path) -> BlobStore:
     backend = os.getenv("BLOB_STORE_BACKEND", "local").lower()
     if backend == "s3":
-        # from core.cache.blobstore_s3 import S3BlobStore
-        # return S3BlobStore(bucket=os.environ["BLOB_S3_BUCKET"], ...)
-        logger.warning("BLOB_STORE_BACKEND=s3 not yet implemented; using LocalBlobStore.")
+        try:
+            from core.cache.blobstore_s3 import s3_store_from_env
+
+            return s3_store_from_env()
+        except Exception as exc:  # noqa: BLE001 — never let a misconfig break startup
+            logger.error(
+                "BLOB_STORE_BACKEND=s3 but S3 store could not be constructed (%s); "
+                "falling back to LocalBlobStore.", exc,
+            )
     return LocalBlobStore(Path(cache_dir) / "cas")
 
 

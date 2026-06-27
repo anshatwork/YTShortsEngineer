@@ -132,7 +132,13 @@ async def auth_callback(
         logger.info("YouTube connected — user=%s channel=%s", user_id, channel_title)
         return _redirect("connected")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("YouTube OAuth callback — token exchange failed: %s", exc)
+        # Log only the exception TYPE, not its message/traceback: a token-exchange
+        # error from Google can embed the authorization code or token in its body,
+        # which must never land in logs. (user_id here is non-secret.)
+        logger.error(
+            "YouTube OAuth callback — token exchange failed (user=%s, error=%s)",
+            user_id, type(exc).__name__,
+        )
         return _redirect("error")
 
 

@@ -38,11 +38,18 @@ _DEFAULT_MAX_TOKENS = 4096
 
 
 class AnthropicLLM(BaseLLMProvider):
-    def __init__(self, model: Optional[str] = None, max_tokens: Optional[int] = None):
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        api_key: Optional[str] = None,
+    ):
         import anthropic  # imported lazily so the package is only required when used
 
         self._anthropic = anthropic
-        self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        # api_key=None lets the SDK read ANTHROPIC_API_KEY from env (our default);
+        # a non-None key is a user's BYOK credential for this job only.
+        self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model or os.getenv("CLAUDE_MODEL", _DEFAULT_MODEL)
         self._max_tokens = max_tokens or int(
             os.getenv("CLAUDE_MAX_TOKENS", str(_DEFAULT_MAX_TOKENS))

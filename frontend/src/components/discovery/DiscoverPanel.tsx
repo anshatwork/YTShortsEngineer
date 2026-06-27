@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import { useDiscover, useDiscoverTopics } from "@/hooks/useDiscover";
 import { cn } from "@/lib/utils";
@@ -44,9 +44,13 @@ function durationIndexFor(
 export function DiscoverPanel() {
   const topicsQuery = useDiscoverTopics();
   const search = useDiscover();
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("discover:panel:videos") ?? "false"); } catch { return false; }
-  });
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("discover:panel:videos");
+      if (stored !== null) setCollapsed(JSON.parse(stored));
+    } catch {}
+  }, []);
 
   const [conversation, setConversation] = useState("");
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);

@@ -161,6 +161,11 @@ async def _trending_crawler_loop(task_queue) -> None:
 # Application
 # ---------------------------------------------------------------------------
 
+# In production (ENVIRONMENT=production) the interactive API docs are disabled so
+# the full schema/endpoint surface isn't exposed publicly. Set ENVIRONMENT to
+# anything else (or leave unset) during development to get /docs + /redoc.
+_IS_PRODUCTION = os.getenv("ENVIRONMENT", "development").lower() == "production"
+
 app = FastAPI(
     title="LongToShorts API",
     description=(
@@ -170,28 +175,36 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
 )
 
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-# Default: allow any origin so local dev works out of the box.
-# Production: set FRONTEND_URL (e.g. https://your-app.vercel.app) to restrict
-# the allowed origins list to only the frontend domain.
-_raw_origins = os.getenv("FRONTEND_URL", "*")
-_cors_origins = (
-    [o.strip() for o in _raw_origins.split(",")]
-    if _raw_origins != "*"
-    else ["*"]
-)
+# Origins come from FRONTEND_URL (comma-separated). In development it defaults to
+# the local frontend so things work out of the box. In production FRONTEND_URL is
+# REQUIRED — we refuse to fall back to "*" because that, combined with
+# allow_credentials, would let any site make authenticated requests.
+_raw_origins = os.getenv("FRONTEND_URL", "").strip()
+if _raw_origins:
+    _cors_origins = [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
+elif _IS_PRODUCTION:
+    raise RuntimeError(
+        "FRONTEND_URL must be set in production (comma-separated allowed origins); "
+        "refusing to start with a wildcard CORS policy."
+    )
+else:
+    _cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True,
+    # Only the methods/headers the frontend actually uses — not a blanket "*".
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -235,12 +248,16 @@ from agents.long_to_shorts.api.youtube_routes import router as youtube_router  #
 from agents.long_to_shorts.api.discover_routes import router as discover_router  # noqa: E402
 from agents.long_to_shorts.api.music_routes import router as music_router  # noqa: E402
 from agents.long_to_shorts.api.events_routes import router as events_router  # noqa: E402
+from agents.long_to_shorts.api.llm_routes import router as llm_router  # noqa: E402
+from agents.long_to_shorts.api.billing_routes import router as billing_router  # noqa: E402
 
 app.include_router(router, prefix="/api/v1", tags=["Long-to-Shorts"])
 app.include_router(edit_router, prefix="/api/v1/edit", tags=["Edit"])
 app.include_router(youtube_router, prefix="/api/v1/youtube", tags=["YouTube"])
 app.include_router(discover_router, prefix="/api/v1/discover", tags=["Discover"])
 app.include_router(music_router, prefix="/api/v1/music", tags=["Music"])
+app.include_router(llm_router, prefix="/api/v1/llm", tags=["LLM (BYOK)"])
+app.include_router(billing_router, prefix="/api/v1/billing", tags=["Billing"])
 # SSE streams (real-time progress). Full paths live on the router, mounted at /api/v1.
 app.include_router(events_router, prefix="/api/v1", tags=["Events"])
 

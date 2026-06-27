@@ -43,7 +43,20 @@ _jwks_client: PyJWKClient | None = None
 
 
 def _auth_disabled() -> bool:
-    return os.getenv("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
+    """Whether to skip JWT verification (dev only).
+
+    Hard guard: the bypass is REFUSED when ENVIRONMENT=production, so a stray
+    AUTH_DISABLED=true in a prod env file can never expose an unauthenticated
+    server. We fail loud rather than silently serve every request as the dev
+    user.
+    """
+    disabled = os.getenv("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
+    if disabled and os.getenv("ENVIRONMENT", "development").lower() == "production":
+        raise RuntimeError(
+            "AUTH_DISABLED is set while ENVIRONMENT=production — refusing to "
+            "disable authentication in production."
+        )
+    return disabled
 
 
 def _get_jwks_client() -> PyJWKClient | None:

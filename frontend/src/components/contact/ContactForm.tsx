@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-const EMAIL = "anshc@adobe.com";
+const EMAIL = "ansh.work2002@gmail.com";
 
 /**
  * Backend-free contact form. On submit it composes a prefilled `mailto:` from
