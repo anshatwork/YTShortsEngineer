@@ -9,11 +9,13 @@ import { PipelineTracker } from "@/components/pipeline/PipelineTracker";
 import { LogViewer } from "@/components/pipeline/LogViewer";
 import { ClipsGrid } from "@/components/clips/ClipsGrid";
 import { JobStatusBadge } from "@/components/dashboard/JobStatusBadge";
+import { Reveal } from "@/components/landing/Reveal";
+import { Masthead } from "@/components/ui/Masthead";
+import { Button } from "@/components/ui/Button";
 import { formatRelative } from "@/lib/utils";
 import { ApiError } from "@/lib/api";
 
 interface Props {
-  // Next.js 16: dynamic route params are a Promise that must be unwrapped.
   params: Promise<{ jobId: string }>;
 }
 
@@ -33,117 +35,153 @@ export default function JobPage({ params }: Props) {
     return <JobNotFound jobId={jobId} />;
   }
 
+  const hasClips =
+    job?.status === "done" &&
+    (clips.length > 0 || (job.clips && job.clips.length > 0));
+
   return (
-    <div className="space-y-4">
-      {/* Breadcrumb / toolbar */}
-      <div className="flex items-center justify-between font-mono text-[10px] tracking-[0.18em] uppercase">
-        <div className="flex items-center gap-2 text-ink-muted">
+    <div className="-mt-2 space-y-8">
+      {/* Masthead */}
+      <Masthead
+        left={
           <Link href="/workspace" className="hover:text-ink transition-colors">
             ← workspace
           </Link>
-          <span aria-hidden className="text-ink-soft">/</span>
-          <span>jobs</span>
-          <span aria-hidden className="text-ink-soft">/</span>
-          <span className="text-ink">{jobId.slice(0, 12)}</span>
-        </div>
-        {job && (
-          <div className="flex items-center gap-4">
-            <JobStatusBadge status={job.status} />
-            <span className="text-ink-soft num-tabular">
-              {formatRelative(job.created_at)}
-            </span>
-          </div>
-        )}
-      </div>
+        }
+        title="The Pipeline"
+        right={<span className="num-tabular">{jobId.slice(0, 8)}</span>}
+      />
 
-      {/* Pipeline strip — always visible */}
-      <PipelineTracker />
+      {/* Job header */}
+      <Reveal>
+        <div className="pb-6 border-b border-rule-soft grid sm:grid-cols-[1fr_auto] items-end gap-4">
+          <div>
+            <p className="kicker mb-3">pipeline job</p>
+            <h1 className="font-display fraunces-soft text-ink leading-[0.92] tracking-[-0.01em] text-[clamp(1.6rem,4vw,2.75rem)]">
+              {job?.video_title ?? (
+                <span className="font-mono text-[1.4rem] text-ink-muted">
+                  {jobId.slice(0, 16)}…
+                </span>
+              )}
+            </h1>
+          </div>
+          {job && (
+            <div className="flex items-center gap-4 pb-1">
+              <JobStatusBadge status={job.status} />
+              <span className="font-mono text-[10px] tracking-[0.14em] text-ink-muted num-tabular">
+                {formatRelative(job.created_at)}
+              </span>
+            </div>
+          )}
+        </div>
+      </Reveal>
+
+      {/* Pipeline tracker */}
+      <Reveal delay={0.04}>
+        <div>
+          <p className="kicker mb-3">Pipeline stages</p>
+          <PipelineTracker />
+        </div>
+      </Reveal>
 
       {/* Error notice */}
       {(job?.status === "failed" || isError) && (
-        <div className="border border-[var(--color-mark)] bg-paper px-4 py-3">
+        <div className="border border-[var(--color-mark)] bg-paper px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className="font-mono text-[10px] tracking-[0.2em] uppercase text-[var(--color-mark)]">
+              <p className="kicker text-[var(--color-mark)] mb-2">
                 {job?.status === "failed" ? "Job failed" : "Error"}
               </p>
-              <p className="text-[12px] text-ink-muted mt-1">
+              <p className="font-mono text-[12px] text-ink-muted leading-relaxed">
                 {job?.status === "failed"
                   ? "Something went wrong while processing this job. You can re-run it with the same settings."
                   : "We couldn't load this job. Check your connection and try again."}
               </p>
               {job?.error && (
-                <p className="font-mono text-[11px] text-ink mt-2 whitespace-pre-wrap break-words">
+                <p className="font-mono text-[11px] text-ink mt-3 whitespace-pre-wrap break-words">
                   {job.error}
                 </p>
               )}
             </div>
             {job?.status === "failed" && (
-              <button
-                type="button"
+              <Button
                 onClick={() => rerun.mutate(jobId)}
-                disabled={rerun.isPending}
-                className="shrink-0 h-9 px-4 bg-ink text-paper hover:bg-ink-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-mono text-[10px] tracking-[0.2em] uppercase"
+                pending={rerun.isPending}
+                pendingLabel="Re-running"
+                className="shrink-0 h-10"
               >
-                {rerun.isPending ? "Re-running…" : "↻ Rerun job"}
-              </button>
+                ↻ Rerun
+              </Button>
             )}
           </div>
         </div>
       )}
 
-      {/* Clips canvas */}
-      <div className="pt-2">
-        {job?.status === "done" && (clips.length > 0 || (job.clips && job.clips.length > 0)) ? (
-          <ClipsGrid clips={clips.length > 0 ? clips : job.clips ?? []} jobId={jobId} />
+      {/* Output clips */}
+      <div>
+        <Reveal>
+          <div className="border-b border-ink pb-3 mb-6">
+            <p className="kicker mb-2">Output</p>
+            <h2 className="font-display text-[clamp(1.25rem,2.5vw,1.75rem)] leading-tight">
+              Rendered <span className="display-italic">clips</span>.
+            </h2>
+          </div>
+        </Reveal>
+        {hasClips ? (
+          <ClipsGrid
+            clips={clips.length > 0 ? clips : job!.clips ?? []}
+            jobId={jobId}
+          />
         ) : (
           <WaitingCanvas status={job?.status} />
         )}
       </div>
 
-      {/* Log panel pinned beneath the workspace */}
-      <div className="pt-2">
-        <LogViewer />
-      </div>
+      {/* Log panel */}
+      <Reveal delay={0.02}>
+        <div>
+          <p className="kicker mb-3">Run log</p>
+          <LogViewer />
+        </div>
+      </Reveal>
     </div>
   );
 }
 
 function JobNotFound({ jobId }: { jobId: string }) {
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2 font-mono text-[10px] tracking-[0.18em] uppercase text-ink-muted">
-        <Link href="/workspace" className="hover:text-ink transition-colors">
-          ← workspace
-        </Link>
-        <span aria-hidden className="text-ink-soft">/</span>
-        <span>jobs</span>
-        <span aria-hidden className="text-ink-soft">/</span>
-        <span className="text-ink truncate max-w-[60vw]">{jobId.slice(0, 12)}</span>
-      </div>
-
-      <section className="border border-ink bg-paper">
-        <div className="px-4 h-8 flex items-center border-b border-rule-soft font-mono text-[10px] tracking-[0.2em] uppercase text-[var(--color-mark)]">
-          404 · job not found
-        </div>
-        <div className="px-6 py-10 flex flex-col items-start gap-4">
-          <p className="font-mono text-[11px] tracking-[0.18em] uppercase text-ink-muted">
-            <span className="text-ink-soft">id</span>{" "}
-            <span className="text-ink">{jobId}</span>
-          </p>
-          <p className="text-sm text-ink-muted max-w-lg leading-relaxed">
-            This job does not exist or you do not have access to it. It may
-            have been submitted by a different account, or the job ID may be
-            incorrect.
-          </p>
-          <Link
-            href="/workspace"
-            className="mt-2 inline-flex items-center gap-3 px-4 h-10 bg-ink text-paper hover:bg-ink-muted transition-colors font-mono text-[11px] tracking-[0.2em] uppercase"
-          >
-            ← back to workspace
+    <div className="-mt-2">
+      <Masthead
+        left={
+          <Link href="/workspace" className="hover:text-ink transition-colors">
+            ← workspace
           </Link>
-        </div>
-      </section>
+        }
+        title="The Pipeline"
+        right={<span className="text-[var(--color-mark)]">404</span>}
+      />
+
+      <div className="mt-10">
+        <p className="kicker text-[var(--color-mark)] mb-3">Not found</p>
+        <h1 className="font-display fraunces-soft text-ink leading-[0.92] tracking-[-0.01em] text-[clamp(1.6rem,4vw,2.75rem)] mb-4">
+          This job doesn&apos;t{" "}
+          <span className="display-italic text-[var(--color-mark)]">exist</span>.
+        </h1>
+        <p className="font-mono text-[11px] tracking-[0.1em] text-ink-muted mb-1">
+          <span className="text-ink-soft">id</span>{" "}
+          <span className="text-ink">{jobId}</span>
+        </p>
+        <p className="font-mono text-[12px] text-ink-muted max-w-lg leading-relaxed mt-3 mb-7">
+          This job does not exist or you do not have access to it. It may have
+          been submitted by a different account, or the job ID may be incorrect.
+        </p>
+        <Link
+          href="/workspace"
+          className="group inline-flex items-center gap-3 h-12 px-6 bg-ink text-paper hover:bg-ink-muted transition-colors font-mono text-[11px] tracking-[0.2em] uppercase"
+        >
+          ← Back to workspace
+        </Link>
+      </div>
     </div>
   );
 }
@@ -152,18 +190,19 @@ function WaitingCanvas({ status }: { status?: string }) {
   if (status === "failed") return null;
 
   const label =
-    status === "queued"
-      ? "queued — awaiting worker"
-      : "pipeline running";
+    status === "queued" ? "Queued — awaiting worker" : "Pipeline running";
 
   return (
-    <section className="border border-rule-soft bg-paper px-4 py-12 flex flex-col items-center gap-3">
-      <p className="font-mono text-[10px] tracking-[0.2em] uppercase text-ink-soft">
-        No clips yet
-      </p>
-      <p className="flex items-center gap-3 font-mono text-[12px] text-ink-muted">
-        <span aria-hidden className="inline-block w-[7px] h-[7px] rounded-full bg-ink ink-pulse" />
+    <section className="border border-ink bg-paper px-4 py-14 flex flex-col items-center gap-4">
+      <span
+        aria-hidden
+        className="inline-block w-[7px] h-[7px] rounded-full bg-ink ink-pulse"
+      />
+      <p className="font-display text-[clamp(1rem,2vw,1.4rem)] text-ink-muted leading-snug">
         {label}
+      </p>
+      <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-ink-soft">
+        Clips appear here when done
       </p>
     </section>
   );

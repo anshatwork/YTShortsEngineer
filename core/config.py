@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     
     # ElevenLabs Configuration
     ELEVENLABS_VOICE_ID: Optional[str] = Field(None, description="ElevenLabs Voice ID")
+
+    # TTS free-provider selection. Default "edge" uses Microsoft Edge neural
+    # voices (edge-tts). Set to "streamlabs" to use the legacy Streamlabs Polly
+    # path instead. Read via os.getenv() in tools/tts; declared here for docs.
+    TTS_FREE_PROVIDER: str = Field(default="edge", description="Free TTS backend: edge | streamlabs")
     PIXABAY_API_KEY: Optional[str] = Field(None, description="Pixabay API Key")
     FREESOUND_API_KEY: Optional[str] = Field(None, description="Freesound API Key (fallback music tier)")
     JAMENDO_CLIENT_ID: Optional[str] = Field(None, description="Jamendo client_id — primary free trending-music tier")
@@ -39,8 +44,12 @@ class Settings(BaseSettings):
     TOP_N_CLIPS: int = Field(default=5, description="Max clips to extract per video")
     
     # Model Configuration
-    LLM_PROVIDER: str = Field(default="claude", description="LLM backend: claude | ollama | hf")
+    LLM_PROVIDER: str = Field(default="claude", description="LLM backend: claude | ollama | glm | hf")
     CLAUDE_MODEL: str = Field(default="claude-sonnet-4-6", description="Claude model id")
+    # GLM (Z.ai) — free-tier provider. Read via os.getenv() in tools/llm/glm.py;
+    # declared here for documentation (extra='ignore' tolerates them in .env).
+    GLM_API_KEY: Optional[str] = Field(None, description="Z.ai GLM API key (free tier)")
+    GLM_MODEL: str = Field(default="glm-4.5-flash", description="GLM model id (free: glm-4.5-flash | glm-4.7-flash)")
     ENABLE_LLM_FALLBACK: bool = Field(default=True, description="Fall back to Ollama when the primary LLM fails")
     LLM_MODEL_ID: str = "zai-org/GLM-4.7"
     WHISPER_MODEL: str = "base"
@@ -60,6 +69,17 @@ class Settings(BaseSettings):
     TASK_QUEUE_BACKEND: str = Field(default="threadpool", description="'threadpool' now; celery/temporal later")
     WORKER_THREADS: int = Field(default=2, description="Background pipeline workers")
     PIPELINE_RESUME_ENABLED: bool = Field(default=True, description="Skip already-complete stages on re-run")
+
+    # ── MCP connector (agents/long_to_shorts/api/mcp_server) ──────────────
+    # Remote MCP server mounted at /mcp so the pipeline can be added as a custom
+    # connector in Claude.ai / ChatGPT. These are read via os.getenv() in the
+    # mcp_* modules (declared here for documentation). MCP_PUBLIC_URL is the
+    # public https base of this server (e.g. https://api.example.com) — required
+    # for the Supabase OAuth flow. MCP_JWT_ALGORITHM must match the Supabase Auth
+    # signing algorithm (ES256/RS256 recommended; HS256 legacy).
+    MCP_ENABLED: bool = Field(default=True, description="Mount the MCP connector at /mcp")
+    MCP_PUBLIC_URL: Optional[str] = Field(None, description="Public https base url of this server (for MCP OAuth)")
+    MCP_JWT_ALGORITHM: str = Field(default="ES256", description="Supabase Auth JWT alg: ES256 | RS256 | HS256")
 
     # ── Clip extraction (agents/long_to_shorts/clipping_logic_node) ───────
     # Each clip's encode is split into time-based parts that are encoded in

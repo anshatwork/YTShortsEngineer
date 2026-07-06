@@ -34,7 +34,9 @@ Thumbs.db
 *.log
 tests
 teat/*
-
+docs/go-live-setup.md
+frontend/.env.development
+frontend/.env.production
 # Whisper model cache
 ~/.cache/whisper/
 assets/*

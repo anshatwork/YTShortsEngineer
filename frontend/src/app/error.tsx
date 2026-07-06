@@ -22,11 +22,12 @@ export default function Error({
   unstable_retry?: () => void;
 }) {
   useEffect(() => {
+    // Recorded to the debug buffer (and mirrored to the console in dev only,
+    // via pushDebug). No raw console call — it would leak in production.
     pushDebug("error", "boundary", `Route error: ${error.message}`, {
       digest: error.digest,
       stack: error.stack,
     });
-    console.error("[boundary] route error", error);
   }, [error]);
 
   const recover = () => (unstable_retry ?? reset)?.();

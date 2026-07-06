@@ -88,9 +88,35 @@
     color: inherit;
     text-decoration: none;
   }
+
+  /* Keyboard focus — a crisp ink outline for native interactive elements that
+     aren't wrapped in a primitive (selects, number inputs, checkboxes, radios,
+     file inputs, links). Only shows for keyboard/AT users, never on mouse
+     click. Primitives use the .focus-ink utility below (which wins over any
+     outline-* utility). */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
 }
 
 @layer utilities {
+  /* Shared keyboard-focus ring for interactive primitives (Button, Field,
+     SegmentedControl). Lives in the utilities layer so it reliably overrides
+     an element's `outline-none`; only the keyboard :focus-visible state paints. */
+  .focus-ink {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+  .focus-ink:focus-visible {
+    outline-color: var(--color-ink);
+  }
+
   /* Hairline rules — the spine of the layout */
   .rule {
     border: 0;

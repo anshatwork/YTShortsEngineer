@@ -48,11 +48,19 @@ def _construct(provider: str, credential=None) -> BaseLLMProvider:
         from tools.llm.ollama import OllamaLLM
 
         return OllamaLLM()
+    if provider == "glm":
+        from tools.llm.glm import GLMLLM
+
+        if credential is not None:
+            return GLMLLM(model=credential.model, api_key=credential.api_key)
+        return GLMLLM()
     if provider == "hf":
         from tools.llm.huggingface import HuggingFaceLLM
 
         return HuggingFaceLLM()
-    raise ValueError(f"Unknown LLM_PROVIDER '{provider}' (use claude | ollama | hf)")
+    raise ValueError(
+        f"Unknown LLM_PROVIDER '{provider}' (use claude | ollama | glm | hf)"
+    )
 
 
 class FallbackLLM(BaseLLMProvider):
