@@ -118,15 +118,17 @@ def _to_static_url(path: str | Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _generate_tts(text: str, voice_preset: str, output_path: Path) -> Path:
-    """Render TTS to *output_path* using the Chatterbox provider.
+    """Render TTS to *output_path* using the shared provider cascade.
 
-    ChatterboxTTS internally falls back to pyttsx3 when CHATTERBOX_API_KEY is
-    unset, and to a dummy file when pyttsx3 is unavailable. We trust that
-    chain rather than re-implementing it here.
+    ``select_tts_provider`` picks ElevenLabs → Chatterbox → Streamlabs Polly
+    (the same order the long-form pipeline uses). With no API keys set this
+    defaults to Streamlabs Polly, which returns a real MP3; its internal
+    pyttsx3 fallback now also writes a properly-encoded file (no WAV-as-mp3,
+    no dummy bytes).
     """
-    from tools.tts.chatterbox import ChatterboxTTS
+    from tools.tts import select_tts_provider
 
-    provider = ChatterboxTTS()
+    provider = select_tts_provider()
     provider.generate_audio(
         text=text,
         output_path=str(output_path),
@@ -285,7 +287,17 @@ def run_tts_edit_job(edit_job_id: str, request: "TTSEditRequest") -> None:
         # 1. Generate TTS audio
         tts_audio = out_dir / "intro_narration.mp3"
         _generate_tts(request.text, request.voice_preset, tts_audio)
-        tts_duration = _probe_duration(tts_audio)
+        try:
+            tts_duration = _probe_duration(tts_audio)
+        except Exception as exc:  # noqa: BLE001 — surface a clear message
+            raise RuntimeError(
+                "TTS produced no audible audio — cannot build the intro. "
+                "Check the TTS provider configuration."
+            ) from exc
+        if tts_duration <= 0:
+            raise RuntimeError(
+                "TTS produced an empty (0s) audio clip — cannot build the intro."
+            )
         logger.info(
             "[edit:%s] tts audio rendered (%.2fs) — building intro video",
             edit_job_id, tts_duration,

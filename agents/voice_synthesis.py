@@ -1,10 +1,8 @@
-import os
 import re
 from typing import Dict, Any
 from agents.base import BaseAgent
 from workflows.state import ShortsState
-from tools.tts.elevenlabs import ElevenLabsTTS
-from tools.tts.chatterbox import ChatterboxTTS
+from tools.tts import select_tts_provider
 from core.config import settings
 
 class VoiceSynthesisAgent(BaseAgent):
@@ -68,32 +66,11 @@ class VoiceSynthesisAgent(BaseAgent):
             self.logger.debug(f"Cleaned script preview: {clean_script[:100]}...")
                 
             output_path = settings.OUTPUT_DIR / f"voiceover_{state.get('broad_topic', 'shorts')[:10]}.mp3"
-            
-            # Select Provider with Cascading Fallback
-            # Priority: ElevenLabs (premium) → Streamlabs Polly (free) → Chatterbox (premium alt) → pyttsx3 (local)
-            
-            # Priority 1: ElevenLabs (premium, requires key)
-            if os.getenv("ELEVENLABS_API_KEY"):
-                tts_provider = ElevenLabsTTS()
-                self.logger.info("Selected TTS Provider: ElevenLabs (Premium)")
-                
-            # Priority 2: Streamlabs Polly (free, no key needed)
-            elif not os.getenv("CHATTERBOX_API_KEY"):
-                from tools.tts.streamlabs_polly import StreamlabsPollyTTS
-                tts_provider = StreamlabsPollyTTS()
-                self.logger.info("Selected TTS Provider: Streamlabs Polly (Free)")
-                
-            # Priority 3: Chatterbox (premium alternative, requires key)
-            elif os.getenv("CHATTERBOX_API_KEY"):
-                tts_provider = ChatterboxTTS()
-                self.logger.info("Selected TTS Provider: Chatterbox (Premium)")
-                
-            # Priority 4: Streamlabs Polly as final fallback (will use pyttsx3 internally if API fails)
-            else:
-                from tools.tts.streamlabs_polly import StreamlabsPollyTTS
-                tts_provider = StreamlabsPollyTTS()
-                self.logger.info("Selected TTS Provider: Streamlabs Polly (Fallback)")
-                
+
+            # Select provider with cascading fallback (shared with the edit API):
+            # ElevenLabs (premium) → Chatterbox (premium alt) → Streamlabs Polly (free).
+            tts_provider = select_tts_provider()
+
             audio_path = tts_provider.generate_audio(
                 text=clean_script,  # Use cleaned script instead of raw script
                 output_path=str(output_path)

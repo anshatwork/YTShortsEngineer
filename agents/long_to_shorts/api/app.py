@@ -45,6 +45,11 @@ _access_logger = logging.getLogger("longtoshorts.access")
 
 _WORKER_THREADS = 2  # concurrent pipeline jobs
 
+# Set in the router/mount section below when MCP is enabled. The lifespan reads
+# it at startup (after the module is fully imported) to also run the mounted MCP
+# app's lifespan — required for the Streamable-HTTP session manager to start.
+_mcp_app = None
+
 
 # ---------------------------------------------------------------------------
 # Lifespan — startup / shutdown
@@ -72,6 +77,7 @@ async def lifespan(app: FastAPI):
     - Expose the task queue + event bus on app.state for route handlers.
     """
     import asyncio
+    import contextlib
     from core.execution import get_event_bus, get_task_queue
 
     _configure_project_loggers()
@@ -96,20 +102,27 @@ async def lifespan(app: FastAPI):
     # timer, so /discover/suggestions always has a fresh pool to personalize.
     trending_crawler_task = asyncio.create_task(_trending_crawler_loop(task_queue))
 
-    try:
-        yield
-    finally:
-        logger.info("LongToShorts API shutting down — waiting for running jobs …")
-        music_refresh_task.cancel()
-        trending_crawler_task.cancel()
-        for _task in (music_refresh_task, trending_crawler_task):
-            try:
-                await _task
-            except asyncio.CancelledError:
-                pass
-        app.state.executor.shutdown(wait=True)
-        task_queue.shutdown(wait=True)
-        logger.info("Shutdown complete.")
+    async with contextlib.AsyncExitStack() as _stack:
+        # The MCP connector is mounted as its own ASGI sub-app (/mcp). Its
+        # Streamable-HTTP session manager only starts if its lifespan runs, so
+        # we enter it here alongside our own startup.
+        if _mcp_app is not None:
+            await _stack.enter_async_context(_mcp_app.lifespan(app))
+            logger.info("MCP connector active at /mcp")
+        try:
+            yield
+        finally:
+            logger.info("LongToShorts API shutting down — waiting for running jobs …")
+            music_refresh_task.cancel()
+            trending_crawler_task.cancel()
+            for _task in (music_refresh_task, trending_crawler_task):
+                try:
+                    await _task
+                except asyncio.CancelledError:
+                    pass
+            app.state.executor.shutdown(wait=True)
+            task_queue.shutdown(wait=True)
+            logger.info("Shutdown complete.")
 
 
 async def _music_cache_refresh_loop(task_queue) -> None:
@@ -260,6 +273,17 @@ app.include_router(llm_router, prefix="/api/v1/llm", tags=["LLM (BYOK)"])
 app.include_router(billing_router, prefix="/api/v1/billing", tags=["Billing"])
 # SSE streams (real-time progress). Full paths live on the router, mounted at /api/v1.
 app.include_router(events_router, prefix="/api/v1", tags=["Events"])
+
+# ---------------------------------------------------------------------------
+# MCP connector (remote MCP server for Claude.ai / ChatGPT), mounted at /mcp
+# ---------------------------------------------------------------------------
+# Opt-in via MCP_ENABLED (default on). Tools wrap the same /api/v1 routes above
+# in-process, so behaviour matches the REST API exactly. Auth is a Supabase
+# OAuth flow (see mcp_auth); the mounted app's lifespan is entered in `lifespan`.
+if os.getenv("MCP_ENABLED", "true").lower() in ("1", "true", "yes"):
+    from agents.long_to_shorts.api.mcp_server import mcp_asgi_app as _mcp_app  # noqa: E402
+
+    app.mount("/mcp", _mcp_app)
 
 # ---------------------------------------------------------------------------
 # Static files — serve produced artifacts (clips + edit outputs) to the frontend

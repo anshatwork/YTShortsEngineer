@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Optional
 import requests
-from tools.tts.base import BaseTTSProvider
+from tools.tts.base import BaseTTSProvider, _pyttsx3_to_file
 from core.exceptions import AudioGenerationError
 
 logger = logging.getLogger(__name__)
@@ -142,48 +142,12 @@ class StreamlabsPollyTTS(BaseTTSProvider):
                 raise Exception(f"API request failed: {e}")
             
         except Exception as api_error:
-            # Fallback to pyttsx3
+            # Fallback to pyttsx3 — renders a real audio file at the requested
+            # extension (WAV transcoded to MP3 etc.) or raises a clean error.
             logger.warning(f"Streamlabs Polly failed: {api_error}")
             logger.info("Falling back to pyttsx3 for local TTS")
-            
-            try:
-                import pyttsx3
-                engine = pyttsx3.init()
-                
-                # Adjust pyttsx3 based on preset
-                voices = engine.getProperty('voices')
-                
-                # Try to find appropriate voice based on preset
-                if preset and "finance" in preset:
-                    # Try to find a male/deeper voice for finance
-                    for voice in voices:
-                        if 'male' in voice.name.lower() or 'david' in voice.name.lower():
-                            engine.setProperty('voice', voice.id)
-                            break
-                
-                # Set speech rate based on preset
-                rate_str = config.get("rate", "100%").rstrip('%')
-                rate = int(float(rate_str) * 1.8)  # Convert percentage to pyttsx3 rate
-                engine.setProperty('rate', rate)
-                engine.setProperty('volume', 0.9)
-                
-                logger.info(f"Using pyttsx3 with rate={rate}")
-                
-                engine.save_to_file(text, output_path)
-                engine.runAndWait()
-                logger.info(f"Generated audio via pyttsx3 at {output_path}")
-                
-                return output_path
-                
-            except ImportError:
-                logger.error("pyttsx3 not found, cannot generate audio")
-                raise AudioGenerationError("Both Streamlabs Polly and pyttsx3 failed")
-            except Exception as pyttsx_error:
-                logger.error(f"pyttsx3 failed: {pyttsx_error}")
-                raise AudioGenerationError(f"All TTS methods failed: {pyttsx_error}")
-        
-        # Should never reach here, but just in case
-        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-            raise AudioGenerationError("Failed to generate audio file")
-        
-        return output_path
+
+            # Convert the preset's "NN%" rate string to a pyttsx3 rate.
+            rate_str = config.get("rate", "100%").rstrip('%')
+            rate = int(float(rate_str) * 1.8)
+            return _pyttsx3_to_file(text, output_path, preset=preset, rate=rate)

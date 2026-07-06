@@ -12,13 +12,16 @@
 {$DOMAIN} {
 	encode zstd gzip
 
-	# SSE endpoints stream progress — disable proxy buffering so events flush
-	# immediately and keep the connection long-lived.
-	@sse path /api/v1/events* /api/v1/*/events*
-	reverse_proxy @sse api:8000 {
+	# Streaming endpoints — disable proxy buffering so bytes flush immediately
+	# and connections stay long-lived. Covers SSE progress streams and the MCP
+	# connector's Streamable-HTTP transport (Claude.ai / ChatGPT).
+	@stream path /api/v1/events* /api/v1/*/events* /mcp*
+	reverse_proxy @stream api:8000 {
 		flush_interval -1
 	}
 
+	# Everything else (REST API, /mcp OAuth discovery + tool calls, static
+	# artifacts) is a normal proxied request to the single API process.
 	reverse_proxy api:8000
 
 	# Don't leak the server banner.

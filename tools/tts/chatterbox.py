@@ -3,7 +3,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Optional
-from tools.tts.base import BaseTTSProvider
+from tools.tts.base import BaseTTSProvider, _pyttsx3_to_file
 from core.exceptions import AudioGenerationError
 
 logger = logging.getLogger(__name__)
@@ -115,43 +115,17 @@ class ChatterboxTTS(BaseTTSProvider):
                     logger.warning("Falling back to pyttsx3")
             else:
                 logger.info("CHATTERBOX_API_KEY not found, using pyttsx3 fallback")
-            
-            # Fallback to pyttsx3
-            try:
-                import pyttsx3
-                engine = pyttsx3.init()
-                
-                # Adjust pyttsx3 based on preset
-                voices = engine.getProperty('voices')
-                
-                # Try to find appropriate voice based on preset
-                if preset and "finance" in preset:
-                    # Try to find a male/deeper voice for finance
-                    for voice in voices:
-                        if 'male' in voice.name.lower() or 'david' in voice.name.lower():
-                            engine.setProperty('voice', voice.id)
-                            break
-                
-                # Set speech rate based on preset
-                rate = config.get("rate", 180)
-                engine.setProperty('rate', rate)
-                engine.setProperty('volume', 0.9)
-                
-                logger.info(f"Using pyttsx3 with rate={rate}, voice={voice_id}")
-                
-                engine.save_to_file(text, output_path)
-                engine.runAndWait()
-                logger.info(f"Generated audio at {output_path}")
-                
-            except ImportError:
-                logger.warning("pyttsx3 not found, creating dummy file")
-                with open(output_path, "wb") as f:
-                    f.write(b"DUMMY AUDIO CONTENT")
-            
-            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                raise AudioGenerationError("Failed to generate audio file")
 
-            return output_path
-            
+            # Fallback to pyttsx3 — renders a real audio file at the requested
+            # extension (WAV is transcoded to MP3 etc.) or raises a clean error.
+            return _pyttsx3_to_file(
+                text,
+                output_path,
+                preset=preset,
+                rate=config.get("rate", 180),
+            )
+
+        except AudioGenerationError:
+            raise
         except Exception as e:
             raise AudioGenerationError(f"Chatterbox TTS failed: {str(e)}") from e

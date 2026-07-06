@@ -5,6 +5,7 @@ import { useJob } from "@/hooks/useJob";
 import { useJobEvents } from "@/hooks/useJobEvents";
 import { useJobStore } from "@/store/jobStore";
 import { ApiError } from "@/lib/api";
+import { pushDebug } from "@/lib/debugLog";
 
 /**
  * Polls GET /api/v1/jobs/{jobId} and syncs results into Zustand store.
@@ -40,7 +41,9 @@ export function usePipelinePoller(jobId: string) {
     const msg = (error as Error).message;
     if (lastToastedRef.current === msg) return;
     lastToastedRef.current = msg;
-    console.error(`[poller] job ${jobId} polling error:`, error);
+    // Route through the debug buffer (dev-gated console mirror) instead of a
+    // raw console.error, so nothing leaks to the prod console.
+    pushDebug("error", "poller", `Job ${jobId} polling error: ${msg}`, error);
     addToast(msg, "error");
   }, [isError, error, addToast, jobId]);
 

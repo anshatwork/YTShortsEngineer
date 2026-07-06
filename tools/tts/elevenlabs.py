@@ -24,10 +24,14 @@ class ElevenLabsTTS(BaseTTSProvider):
         text: str,
         output_path: str,
         voice_id: Optional[str] = None,
-        language: str = "en"
+        language: str = "en",
+        preset: Optional[str] = None,
     ) -> str:
         """
         Generate audio using ElevenLabs API.
+
+        ``preset`` is accepted for interface parity with the other providers
+        but is not used (ElevenLabs selects voices by ``voice_id``).
         """
         try:
             if not self.api_key:
