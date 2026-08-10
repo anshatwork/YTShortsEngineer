@@ -371,8 +371,16 @@ def _content_gen_impl(state: LongToShortsState) -> Dict[str, Any]:
                 from agents.long_to_shorts._llm_cache import cached_llm_text
 
                 def _invoke() -> str:
-                    meta = llm.parse(user_prompt, ClipMeta, system=_CONTENT_SYSTEM_FILLED)
-                    return meta.model_dump_json()
+                    def _call() -> str:
+                        meta = llm.parse(user_prompt, ClipMeta, system=_CONTENT_SYSTEM_FILLED)
+                        return meta.model_dump_json()
+                    # Route the real model call through the inference scheduler
+                    # for global GPU concurrency control (cache key unchanged).
+                    from tools.llm.inference import run_scheduled, scheduler_enabled
+                    if scheduler_enabled():
+                        from core.inference import Priority
+                        return run_scheduled(_call, priority=Priority.INTERACTIVE)
+                    return _call()
 
                 raw = cached_llm_text(
                     user_prompt,

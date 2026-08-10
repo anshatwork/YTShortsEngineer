@@ -52,6 +52,8 @@ export interface JobRequest {
   add_intro: boolean;     // default true
   clip_mode: ClipMode;    // default "portrait"
   user_context?: string;  // optional creator guidance steering LLM titles/hooks/thumbnails
+  auto_upload?: boolean;  // default false — auto-publish every clip to YouTube when done
+  auto_upload_privacy?: PrivacyStatus; // default "public" — visibility for auto-uploaded clips
 }
 
 // ─── Discover API Types ───────────────────────────────────────────────────────
@@ -116,6 +118,27 @@ export interface DiscoverSuggestionsResponse {
   generated_at: string;
   last_seen_at?: string | null;
   interest_summary?: string | null;
+}
+
+// ─── Usage / billing (GET /usage) ──────────────────────────────────────────────
+// Mirrors get_usage() in agents/long_to_shorts/api/routes.py. `limit`/`remaining`
+// are null when the job-cap quota is not enforced (dev / unmetered deployments).
+
+export interface CreditsSnapshot {
+  plan: string;
+  granted: number;
+  used: number;
+  remaining: number;
+  enforced: boolean;
+}
+
+export interface UsageResponse {
+  plan: string;
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  enforced: boolean;
+  credits: CreditsSnapshot;
 }
 
 // ─── Edit API Types ───────────────────────────────────────────────────────────
@@ -340,6 +363,168 @@ export interface YouTubeUploadJob {
 export interface YouTubeUploadListResponse {
   uploads: YouTubeUploadJob[];
   total: number;
+}
+
+// ─── Autonomous Publishing Agent ──────────────────────────────────────────────
+// Mirrors agents/long_to_shorts/api/models.py (PublishingJob et al.) + the
+// agents/publishing/schemas.py sub-objects.
+
+export type PublishingStatus =
+  | "discovering"
+  | "waiting_for_source_approval"
+  | "waiting_for_context_review"
+  | "generating"
+  | "scoring"
+  | "evaluating"
+  | "revising"
+  | "waiting_for_upload_approval"
+  | "uploading"
+  | "complete"
+  | "failed"
+  | "cancelled";
+
+export interface VideoCandidate {
+  video_id: string;
+  title: string;
+  url: string;
+  channel: string;
+  description: string;
+  thumbnail: string;
+  published_at: string;
+  duration_seconds: number;
+  duration_label: string;
+  view_count: number;
+  like_count: number;
+  comment_count: number;
+}
+
+export interface DiscoveryRecommendation {
+  video: VideoCandidate;
+  rank: number;
+  why_selected: string;
+  expected_clip_quality: string; // low | medium | high
+  hook_potential: number; // 0-10
+  topic_relevance: number; // 0-10
+  scores: Record<string, number>;
+}
+
+export interface YouTubeVideoContext {
+  video_id: string;
+  title: string;
+  description: string;
+  published_at: string;
+  channel_id: string | null;
+  channel_title: string;
+  channel_description: string;
+  channel_subscriber_count: number | null;
+  transcript: string;
+  chapters: { start_seconds: number; title: string }[];
+  comments: { author: string; text: string; like_count: number }[];
+  related_videos: VideoCandidate[];
+}
+
+export interface DimensionScore {
+  name: string;
+  score: number; // 0-10
+  reasoning: string;
+}
+
+export interface EvalReport {
+  clip_id: string | null;
+  overall_score: number; // 0-100
+  passed: boolean;
+  dimensions: DimensionScore[];
+  strengths: string[];
+  weaknesses: string[];
+  recommendations: string[];
+  best_effort: boolean;
+}
+
+export interface ScoreCard {
+  clip_id: string;
+  overall: number;
+  factors: Record<string, number>;
+  kept: boolean;
+  reasoning: string;
+}
+
+export interface PublishingJob {
+  publishing_job_id: string;
+  status: PublishingStatus;
+  created_at: string;
+  updated_at: string;
+  query: string | null;
+  phase_detail: string | null;
+  candidates: DiscoveryRecommendation[] | null;
+  approved_video_url: string | null;
+  source_context: YouTubeVideoContext | null;
+  generated_clips: ClipResult[] | null;
+  selected_clip_id: string | null;
+  upload_privacy_status: PrivacyStatus;
+  upload_category_id: string;
+  upload_tags: string[];
+  clip_job_id: string | null;
+  scored_clips: ScoreCard[] | null;
+  selected_clip: ClipResult | null;
+  eval_report: EvalReport | null;
+  revision_count: number;
+  upload_id: string | null;
+  video_id: string | null;
+  video_url: string | null;
+  error: string | null;
+}
+
+export interface PublishingListResponse {
+  jobs: PublishingJob[];
+  total: number;
+}
+
+export interface PublishingStartRequest {
+  query: string;
+  days_ago?: number;
+  top_n_candidates?: number;
+  top_n_clips?: number;
+  user_context?: string;
+  add_subtitles?: boolean;
+  add_top_text?: boolean;
+  add_intro?: boolean;
+  add_music?: boolean;
+  add_thumbnail?: boolean;
+  thumbnail_style?: ThumbnailStyle;
+  clip_mode?: ClipMode;
+}
+
+export interface ApproveSourceRequest {
+  action: "approve" | "reject" | "refresh";
+  video_url?: string;
+}
+
+export interface ApproveUploadRequest {
+  action: "approve" | "reject" | "regenerate" | "edit_metadata" | "select_clip";
+  clip_id?: string;
+  metadata?: { title?: string; description?: string; hashtags?: string[] };
+  privacy_status?: PrivacyStatus;
+  category_id?: string;
+  tags?: string[];
+}
+
+export interface PublishingReviewRequest {
+  user_context?: string;
+  top_n_clips?: number;
+  add_subtitles?: boolean;
+  add_top_text?: boolean;
+  add_intro?: boolean;
+  add_music?: boolean;
+  add_thumbnail?: boolean;
+  thumbnail_style?: ThumbnailStyle;
+  clip_mode?: ClipMode;
+  regenerate?: boolean;
+}
+
+export interface PublishingMetrics {
+  inference: Record<string, number | null>;
+  youtube_quota_remaining: number;
+  youtube_quota_used: number;
 }
 
 // ─── UI-only Types (not from API) ─────────────────────────────────────────────

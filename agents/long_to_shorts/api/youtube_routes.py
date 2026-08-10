@@ -147,7 +147,9 @@ async def auth_callback(
     summary="Disconnect YouTube (delete stored credentials)",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def auth_disconnect(user_id: str = Depends(get_current_user_id)) -> None:
+async def auth_disconnect(user_id: str = Depends(get_current_user_id)):
+    # NOTE: no `-> None` return annotation — newer FastAPI fails to import 204
+    # routes annotated that way (see project notes / llm_routes.py).
     youtube_credentials_store.delete(user_id)
     logger.info("YouTube disconnected — user=%s", user_id)
 

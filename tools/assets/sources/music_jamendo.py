@@ -19,8 +19,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-import requests
-
+from tools.assets.backoff import get_with_backoff
 from tools.assets.base import AssetSource
 from tools.assets.models import Asset, AssetQuery, AssetType
 from tools.assets.sources._env import configured
@@ -90,8 +89,8 @@ class JamendoMusicSource(AssetSource):
                 f"{int(query.min_duration)}_{int(query.max_duration or 600)}"
             )
 
-        resp = requests.get(_API_URL, params=params, timeout=_DISCOVER_TIMEOUT)
-        resp.raise_for_status()
+        # Backoff on Jamendo rate-limits (429) / transient 5xx before giving up.
+        resp = get_with_backoff(_API_URL, params=params, timeout=_DISCOVER_TIMEOUT)
         body = resp.json() or {}
 
         # Jamendo signals API-level errors inside the JSON envelope (HTTP 200).

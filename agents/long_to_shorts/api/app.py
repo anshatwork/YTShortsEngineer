@@ -93,6 +93,29 @@ async def lifespan(app: FastAPI):
     # Backwards-compat: existing routes still reference app.state.executor.
     app.state.executor = ThreadPoolExecutor(max_workers=_WORKER_THREADS)
 
+    # Inference scheduler: the single choke point for all LLM calls. Start its
+    # worker(s) up front so the first request doesn't pay a cold start.
+    from core.inference import get_scheduler
+    scheduler = get_scheduler()
+    scheduler.start()
+    app.state.inference_scheduler = scheduler
+
+    # Phase 2 GPU management: warm the eval-tier model + start idle eviction.
+    # No-op unless INFERENCE_WARM_ENABLED and the provider is local Ollama.
+    try:
+        from tools.llm.warm import start_warm_pool
+        start_warm_pool()
+    except Exception:  # noqa: BLE001
+        logger.debug("warm pool not started", exc_info=True)
+
+    # Crash recovery: re-enqueue any autonomous publishing run left mid-step by a
+    # previous process (steps are idempotent). Best-effort; never blocks startup.
+    try:
+        from agents.long_to_shorts.api.publishing_runner import recover_publishing_jobs
+        recover_publishing_jobs()
+    except Exception:  # noqa: BLE001
+        logger.warning("publishing crash-recovery sweep skipped", exc_info=True)
+
     # Self-warming music cache: refresh once on startup, then on a timer. The
     # actual work runs on the task queue (off the event loop); this coroutine
     # just paces it. See tools/assets/refresh.refresh_music_cache.
@@ -122,6 +145,15 @@ async def lifespan(app: FastAPI):
                     pass
             app.state.executor.shutdown(wait=True)
             task_queue.shutdown(wait=True)
+            try:
+                app.state.inference_scheduler.stop(wait=True)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from tools.llm.warm import stop_warm_pool
+                stop_warm_pool()
+            except Exception:  # noqa: BLE001
+                pass
             logger.info("Shutdown complete.")
 
 
@@ -155,9 +187,9 @@ async def _trending_crawler_loop(task_queue) -> None:
     from agents.long_to_shorts.trending_crawler import crawl_trending_pool
 
     try:
-        hours = max(1, int(os.getenv("TRENDING_CRAWLER_HOURS", "6")))
+        hours = max(1, int(os.getenv("TRENDING_CRAWLER_HOURS", "12")))
     except ValueError:
-        hours = 6
+        hours = 12
 
     while True:
         try:
@@ -263,6 +295,8 @@ from agents.long_to_shorts.api.music_routes import router as music_router  # noq
 from agents.long_to_shorts.api.events_routes import router as events_router  # noqa: E402
 from agents.long_to_shorts.api.llm_routes import router as llm_router  # noqa: E402
 from agents.long_to_shorts.api.billing_routes import router as billing_router  # noqa: E402
+from agents.long_to_shorts.api.kg_routes import router as kg_router  # noqa: E402
+from agents.long_to_shorts.api.publishing_routes import router as publishing_router  # noqa: E402
 
 app.include_router(router, prefix="/api/v1", tags=["Long-to-Shorts"])
 app.include_router(edit_router, prefix="/api/v1/edit", tags=["Edit"])
@@ -271,6 +305,11 @@ app.include_router(discover_router, prefix="/api/v1/discover", tags=["Discover"]
 app.include_router(music_router, prefix="/api/v1/music", tags=["Music"])
 app.include_router(llm_router, prefix="/api/v1/llm", tags=["LLM (BYOK)"])
 app.include_router(billing_router, prefix="/api/v1/billing", tags=["Billing"])
+# Knowledge Graph: asset registration, ingestion, hybrid search (additive).
+app.include_router(kg_router, prefix="/api/v1", tags=["Knowledge Graph"])
+# Autonomous Publishing Agent: discover → approve source → generate → score →
+# eval → approve upload → publish (durable, human-gated). Additive.
+app.include_router(publishing_router, prefix="/api/v1", tags=["Publishing"])
 # SSE streams (real-time progress). Full paths live on the router, mounted at /api/v1.
 app.include_router(events_router, prefix="/api/v1", tags=["Events"])
 
@@ -281,9 +320,20 @@ app.include_router(events_router, prefix="/api/v1", tags=["Events"])
 # in-process, so behaviour matches the REST API exactly. Auth is a Supabase
 # OAuth flow (see mcp_auth); the mounted app's lifespan is entered in `lifespan`.
 if os.getenv("MCP_ENABLED", "true").lower() in ("1", "true", "yes"):
-    from agents.long_to_shorts.api.mcp_server import mcp_asgi_app as _mcp_app  # noqa: E402
+    from agents.long_to_shorts.api.mcp_server import (  # noqa: E402
+        mcp_asgi_app as _mcp_app,
+        auth_provider as _mcp_auth_provider,
+    )
 
     app.mount("/mcp", _mcp_app)
+
+    # The MCP server is mounted under /mcp, but OAuth clients (Claude.ai /
+    # ChatGPT) discover it via RFC 9728 protected-resource metadata served at the
+    # origin ROOT. FastMCP can't serve those from inside the subpath mount, so we
+    # register the provider's discovery routes on the parent app here. Without
+    # this the connector's sign-in fails at the discovery step.
+    if _mcp_auth_provider is not None:
+        app.router.routes.extend(_mcp_auth_provider.get_routes())
 
 # ---------------------------------------------------------------------------
 # Static files — serve produced artifacts (clips + edit outputs) to the frontend

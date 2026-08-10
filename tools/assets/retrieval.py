@@ -26,7 +26,8 @@ import os
 import time
 from typing import Iterable, List, Optional
 
-from tools.assets.models import Asset, AssetQuery, AssetType
+from tools.assets.backoff import is_bad
+from tools.assets.models import Asset, AssetQuery
 from tools.assets.registry import get_sources
 from tools.assets.store import AssetStore
 
@@ -77,7 +78,9 @@ def _discover_live(query: AssetQuery) -> None:
         for asset in candidates:
             if downloaded >= query.limit:
                 break
-            if asset.cache_key in existing:
+            # Skip already-cached and known-bad (recently failed) assets so a
+            # broken-but-popular track isn't re-attempted every refresh cycle.
+            if asset.cache_key in existing or is_bad(asset.cache_key):
                 continue
             local = source.fetch(asset)
             if not local:

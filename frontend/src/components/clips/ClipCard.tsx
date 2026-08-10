@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Download, Play, Copy, Wand2, Upload } from "lucide-react";
+import { Download, Play, Copy, Wand2, Upload, ExternalLink } from "lucide-react";
 import type { ClipResult, EditOperation } from "@/types/api";
 import { formatDuration, cn, pathToStaticUrl } from "@/lib/utils";
 import { API_HOST_URL } from "@/lib/constants";
 import { useEditJobsForClip } from "@/hooks/useEditJob";
+import { useYouTubeUploadsForClip } from "@/hooks/useYouTube";
 import { useJobStore } from "@/store/jobStore";
 import { useThumbnail } from "@/hooks/useThumbnail";
 import { PublishDialog } from "./PublishDialog";
@@ -22,6 +23,10 @@ interface ClipCardProps {
   clip: ClipResult;
   index: number;
   jobId?: string;
+  /** When true, a selection checkbox overlays the card (batch-upload mode). */
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }
 
 /**
@@ -34,7 +39,14 @@ interface ClipCardProps {
  * mounted with `preload="metadata"`. Idle cards pay zero network cost.
  * Range-request streaming is handled by FastAPI's StaticFiles mount.
  */
-export function ClipCard({ clip, index, jobId }: ClipCardProps) {
+export function ClipCard({
+  clip,
+  index,
+  jobId,
+  selectable = false,
+  selected = false,
+  onToggleSelect,
+}: ClipCardProps) {
   const score = clip.hook_score.toFixed(2);
   const duration = formatDuration(clip.timestamp_range[0], clip.timestamp_range[1]);
   const plateNo = String(index + 1).padStart(2, "0");
@@ -49,6 +61,17 @@ export function ClipCard({ clip, index, jobId }: ClipCardProps) {
     (j) => j.status === "done" && j.output_url,
   );
   const editedUrl = latestEdit ? `${API_HOST_URL}${latestEdit.output_url}` : null;
+
+  // Upload history — surface a persistent Published/Uploading badge on the card.
+  const uploads = useYouTubeUploadsForClip(jobId ?? null, clip.clip_id);
+  const uploadList = uploads.data?.uploads ?? [];
+  const publishedUpload = uploadList.find(
+    (u) => u.status === "done" && u.video_url,
+  );
+  const pendingUpload =
+    !publishedUpload &&
+    uploadList.find((u) => u.status === "running" || u.status === "queued");
+
   const sourceUrl = pathToStaticUrl(clip.path);
   const staticUrl = editedUrl ?? sourceUrl;
   const isEdited = !!editedUrl;
@@ -88,9 +111,36 @@ export function ClipCard({ clip, index, jobId }: ClipCardProps) {
   };
 
   return (
-    <article className="border border-ink bg-paper flex flex-col h-full">
+    <article
+      className={cn(
+        "bg-paper flex flex-col h-full",
+        selected ? "border-2 border-[var(--color-mark)]" : "border border-ink",
+      )}
+    >
       {/* Specimen well — placeholder until Play is clicked, then inline video */}
       <div className="relative aspect-[9/16] bg-paper-2 border-b border-ink overflow-hidden">
+        {/* Selection checkbox — batch-upload mode */}
+        {selectable && (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={selected ? "Deselect clip for upload" : "Select clip for upload"}
+            title={selected ? "Selected — click to deselect" : "Select for upload"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect?.();
+            }}
+            className={cn(
+              "absolute top-2 left-2 z-20 w-6 h-6 flex items-center justify-center border font-mono text-[12px] leading-none transition-colors drop-shadow-sm",
+              selected
+                ? "bg-[var(--color-mark)] text-paper border-[var(--color-mark)]"
+                : "bg-paper/90 text-transparent border-ink hover:text-ink-soft",
+            )}
+          >
+            ✓
+          </button>
+        )}
         {playing && staticUrl ? (
           <>
             <video
@@ -122,8 +172,13 @@ export function ClipCard({ clip, index, jobId }: ClipCardProps) {
               />
             )}
 
-            {/* Plate number — top-left */}
-            <span className="absolute top-2 left-2 font-mono text-[10px] tracking-[0.18em] text-ink-muted uppercase drop-shadow-sm">
+            {/* Plate number — top-left (shifted right when the checkbox shows) */}
+            <span
+              className={cn(
+                "absolute top-2 font-mono text-[10px] tracking-[0.18em] text-ink-muted uppercase drop-shadow-sm",
+                selectable ? "left-10" : "left-2",
+              )}
+            >
               plate&nbsp;{plateNo}
             </span>
 
@@ -158,8 +213,8 @@ export function ClipCard({ clip, index, jobId }: ClipCardProps) {
           <span className="num-tabular">{score}</span>
         </div>
 
-        {/* Edit-state badge — reflects whether the played video is an edit */}
-        <div className="font-mono text-[10px] tracking-[0.16em] uppercase">
+        {/* Edit-state + publish badges */}
+        <div className="flex items-center justify-between gap-2 font-mono text-[10px] tracking-[0.16em] uppercase">
           {isEdited ? (
             <span className="text-ink">
               ◆ Edited
@@ -173,6 +228,27 @@ export function ClipCard({ clip, index, jobId }: ClipCardProps) {
           ) : (
             <span className="text-ink-soft">○ Original</span>
           )}
+
+          {publishedUpload ? (
+            <a
+              href={publishedUpload.video_url ?? "#"}
+              target="_blank"
+              rel="noreferrer"
+              title="View on YouTube"
+              className="flex items-center gap-1 text-ink hover:underline shrink-0"
+            >
+              <ExternalLink size={10} strokeWidth={1.6} />
+              Published
+            </a>
+          ) : pendingUpload ? (
+            <span className="flex items-center gap-1.5 text-ink-muted shrink-0">
+              <span
+                aria-hidden
+                className="inline-block w-2.5 h-2.5 border border-ink border-t-transparent rounded-full animate-spin"
+              />
+              {pendingUpload.status === "running" ? "Uploading" : "Queued"}
+            </span>
+          ) : null}
         </div>
 
         {/* Title — fixed 2-line slot so action bars align across cards */}

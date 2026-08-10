@@ -27,8 +27,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Now we can use absolute imports
-from tools.youtube.search import search_youtube_videos
+# Now we can use absolute imports (after the sys.path bootstrap above, so E402 is expected)
+from core.exceptions import QuotaExceededError  # noqa: E402
+from tools.youtube.search import search_youtube_videos  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,11 @@ def fetch_trending_videos(
             "queries_used": queries,
         }
 
+    except QuotaExceededError:
+        # Daily budget exhausted — let it propagate so discovery can degrade to
+        # the cached pool and the crawler can stop early, instead of being
+        # mistaken for "no trending videos found".
+        raise
     except Exception as e:
         logger.error(f"Trending video fetch failed: {e}", exc_info=True)
         return {

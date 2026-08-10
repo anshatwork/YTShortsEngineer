@@ -137,7 +137,14 @@ def build_authorization_url(state: str) -> str:
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_config(
-        _client_config(), scopes=SCOPES, redirect_uri=_redirect_uri()
+        _client_config(),
+        scopes=SCOPES,
+        redirect_uri=_redirect_uri(),
+        # Confidential "web" client (has client_secret) → PKCE is optional. Disable
+        # it so no code_challenge is sent; otherwise the separate Flow in
+        # exchange_code() has no code_verifier and Google rejects the token
+        # exchange with "invalid_grant: Missing code verifier".
+        autogenerate_code_verifier=False,
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
@@ -154,7 +161,12 @@ def exchange_code(code: str):
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_config(
-        _client_config(), scopes=SCOPES, redirect_uri=_redirect_uri()
+        _client_config(),
+        scopes=SCOPES,
+        redirect_uri=_redirect_uri(),
+        # Must match build_authorization_url(): no PKCE, so no code_verifier is
+        # expected at token exchange.
+        autogenerate_code_verifier=False,
     )
     flow.fetch_token(code=code)
     return flow.credentials
@@ -233,8 +245,13 @@ def get_authenticated_youtube(user_id: str):
     creds = credentials_from_record(record)
     if not creds.valid:
         creds.refresh(Request())
+        # Carry the refresh_token through: the store's upsert is INSERT...ON
+        # CONFLICT, and refresh_token is NOT NULL, so an insert half that omits it
+        # violates the constraint before the on-conflict UPDATE can run. google-auth
+        # keeps the refresh_token across .refresh(); fall back to the stored one.
         youtube_credentials_store.upsert(
             user_id,
+            refresh_token=creds.refresh_token or record.get("refresh_token"),
             access_token=creds.token,
             token_expiry=_to_aware_utc(creds.expiry),
         )

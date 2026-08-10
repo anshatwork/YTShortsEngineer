@@ -125,6 +125,21 @@ class JobRequest(BaseModel):
         examples=["deep dive on AI agents — focus on the technical payoff"],
     )
 
+    # --- Auto-publish (opt-in, chosen before the run) ---
+    auto_upload: bool = Field(
+        default=False,
+        description=(
+            "When true, every generated clip is automatically uploaded to the "
+            "user's connected YouTube channel once the pipeline finishes. "
+            "Best-effort: if no account is connected the uploads are skipped and "
+            "the clip job still succeeds. No per-clip review happens."
+        ),
+    )
+    auto_upload_privacy: PrivacyStatus = Field(
+        default="public",
+        description="Privacy for auto-uploaded clips. Defaults to 'public'.",
+    )
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -787,4 +802,244 @@ class YouTubeUploadListResponse(BaseModel):
     """Returned by GET /youtube/uploads."""
 
     uploads: List[YouTubeUploadJob]
+    total: int
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph — asset registration, ingestion jobs, search
+# ---------------------------------------------------------------------------
+
+KGMediaType = Literal["video", "image", "screenshot", "document", "slide", "audio"]
+AssetStatus = Literal["registered", "ingesting", "ingested", "failed"]
+
+
+class AssetRegisterRequest(BaseModel):
+    """Body for POST /assets — register an owned media asset for ingestion."""
+
+    source_path: Optional[str] = Field(
+        default=None, description="Server-readable local path to the media bytes."
+    )
+    youtube_url: Optional[str] = Field(
+        default=None, description="YouTube URL (downloaded at ingest time)."
+    )
+    media_type: Optional[KGMediaType] = Field(
+        default=None, description="Media type; inferred from the extension if omitted."
+    )
+    filename: Optional[str] = Field(default=None, description="Original display filename.")
+    title: Optional[str] = Field(default=None, description="Human-readable title.")
+
+
+class AssetRecord(BaseModel):
+    """A registered media asset (mirrors the Supabase `assets` row)."""
+
+    asset_id: str
+    media_type: KGMediaType
+    uri: str
+    filename: Optional[str] = None
+    title: Optional[str] = None
+    content_hash: Optional[str] = None
+    status: AssetStatus = "registered"
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssetListResponse(BaseModel):
+    assets: List[AssetRecord]
+    total: int
+
+
+class IngestionJob(BaseModel):
+    """Status of one run of the ingestion sub-graph (SSE-streamed)."""
+
+    ingestion_job_id: str
+    asset_id: str
+    status: JobStatusLiteral
+    current_node: Optional[str] = None
+    error: Optional[str] = None
+    stats: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IngestionJobListResponse(BaseModel):
+    ingestion_jobs: List[IngestionJob]
+    total: int
+
+
+class KGSearchRequest(BaseModel):
+    """Body for POST /kg/search — hybrid vector + lexical search over one label."""
+
+    label: str = Field(default="TranscriptChunk", description="Anchor node label to search.")
+    query: str = Field(..., min_length=1, description="Free-text query.")
+    top_k: int = Field(default=20, ge=1, le=100)
+    modality: Literal["text", "image"] = Field(
+        default="text",
+        description="'text' for text nodes; 'image' for cross-modal text→keyframe search.",
+    )
+
+
+class KGNodeResult(BaseModel):
+    labels: List[str] = Field(default_factory=list)
+    properties: dict = Field(default_factory=dict)
+    score: Optional[float] = None
+
+
+class KGSearchResponse(BaseModel):
+    results: List[KGNodeResult]
+    total: int
+
+
+class KGAskRequest(BaseModel):
+    """Body for POST /kg/query — a natural-language question over the graph."""
+
+    question: str = Field(..., min_length=1, description="Natural-language request.")
+    top_k: int = Field(default=20, ge=1, le=100)
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Publishing Agent — durable, human-gated end-to-end workflow
+# ---------------------------------------------------------------------------
+
+from agents.publishing.schemas import (  # noqa: E402 — after base models to avoid cycles
+    DiscoveryRecommendation,
+    EvalReport,
+    ScoreCard,
+)
+
+PublishingStatusLiteral = Literal[
+    "discovering", "waiting_for_source_approval", "waiting_for_context_review", "generating", "scoring",
+    "evaluating", "revising", "waiting_for_upload_approval", "uploading",
+    "complete", "failed", "cancelled",
+]
+
+
+class PublishingStartRequest(BaseModel):
+    """Body for POST /publishing — kick off an autonomous publishing run."""
+
+    query: str = Field(
+        ..., min_length=1, max_length=500,
+        description="Natural-language discovery request, e.g. 'today's AI agent clips'.",
+        examples=["today's best AI agent explainers under an hour"],
+    )
+    days_ago: int = Field(default=7, ge=1, le=365, description="Recency window for discovery.")
+    top_n_candidates: Optional[int] = Field(
+        default=None, ge=1, le=20,
+        description="How many ranked source videos to present (defaults to PUBLISH_DISCOVER_TOP_N).",
+    )
+    top_n_clips: int = Field(default=3, ge=1, le=20, description="Clips to generate from the approved video.")
+    user_context: Optional[str] = Field(default=None, max_length=500, description="Creator guidance.")
+    # Clip-generation options threaded into the reused clip pipeline at GENERATING.
+    add_subtitles: bool = False
+    add_top_text: bool = False
+    add_intro: bool = True
+    add_music: bool = False
+    add_thumbnail: bool = True
+    thumbnail_style: ThumbnailStyle = "auto"
+    clip_mode: Literal["portrait", "fullscreen"] = "portrait"
+
+
+class YouTubeVideoContext(BaseModel):
+    """Best-effort YouTube context collected for a selected source video."""
+
+    video_id: str
+    title: str = ""
+    description: str = ""
+    published_at: str = ""
+    channel_id: Optional[str] = None
+    channel_title: str = ""
+    channel_description: str = ""
+    channel_subscriber_count: Optional[int] = None
+    transcript: str = ""
+    chapters: List[dict] = Field(default_factory=list)
+    comments: List[dict] = Field(default_factory=list)
+    related_videos: List[DiscoverVideo] = Field(default_factory=list)
+
+
+class PublishingReviewRequest(BaseModel):
+    """Structured instructions submitted after source context review."""
+
+    user_context: Optional[str] = Field(default=None, max_length=1000)
+    top_n_clips: Optional[int] = Field(default=None, ge=1, le=20)
+    add_subtitles: Optional[bool] = None
+    add_top_text: Optional[bool] = None
+    add_intro: Optional[bool] = None
+    add_music: Optional[bool] = None
+    add_thumbnail: Optional[bool] = None
+    thumbnail_style: Optional[ThumbnailStyle] = None
+    clip_mode: Optional[Literal["portrait", "fullscreen"]] = None
+    regenerate: bool = True
+
+
+class MetadataPatch(BaseModel):
+    """Human edits to the selected clip's metadata at the upload gate."""
+
+    title: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=5_000)
+    hashtags: Optional[List[str]] = None
+
+
+class ApproveSourceRequest(BaseModel):
+    """Body for POST /publishing/{id}/approve-source (human decision #1)."""
+
+    action: Literal["approve", "reject", "refresh"] = "approve"
+    video_url: Optional[str] = Field(
+        default=None, description="Required when action='approve' — the chosen candidate URL."
+    )
+
+
+class ApproveUploadRequest(BaseModel):
+    """Body for POST /publishing/{id}/approve-upload (human decision #2)."""
+
+    action: Literal["approve", "reject", "regenerate", "edit_metadata", "select_clip"] = "approve"
+    clip_id: Optional[str] = Field(default=None, description="Clip to select before upload.")
+    metadata: Optional[MetadataPatch] = Field(
+        default=None, description="Only for action='edit_metadata' — patch then stay at the gate."
+    )
+    privacy_status: PrivacyStatus = Field(default="private")
+    category_id: str = Field(default="22")
+    tags: List[str] = Field(default_factory=list)
+
+
+class PublishingJob(BaseModel):
+    """Full state of one autonomous publishing run (SSE-streamed on ``publish:<id>``)."""
+
+    publishing_job_id: str
+    status: PublishingStatusLiteral
+    created_at: datetime
+    updated_at: datetime
+    query: Optional[str] = None
+    phase_detail: Optional[str] = Field(
+        default=None, description="Human-readable note about the current step."
+    )
+    candidates: Optional[List[DiscoveryRecommendation]] = Field(
+        default=None, description="Ranked, explained source videos (at the source gate)."
+    )
+    approved_video_url: Optional[str] = None
+    source_context: Optional[YouTubeVideoContext] = None
+    generated_clips: Optional[List[ClipResult]] = None
+    selected_clip_id: Optional[str] = None
+    upload_privacy_status: PrivacyStatus = "private"
+    upload_category_id: str = "22"
+    upload_tags: List[str] = Field(default_factory=list)
+    clip_job_id: Optional[str] = Field(
+        default=None, description="Id of the reused clip-pipeline job for this run."
+    )
+    scored_clips: Optional[List[ScoreCard]] = None
+    selected_clip: Optional[ClipResult] = Field(
+        default=None, description="The auto-selected best clip (at the upload gate)."
+    )
+    eval_report: Optional[EvalReport] = Field(
+        default=None, description="The Eval Agent's verdict on the selected clip."
+    )
+    revision_count: int = 0
+    upload_id: Optional[str] = None
+    video_id: Optional[str] = Field(default=None, description="YouTube id once published.")
+    video_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+class PublishingJobListResponse(BaseModel):
+    """Returned by GET /publishing."""
+
+    jobs: List[PublishingJob]
     total: int

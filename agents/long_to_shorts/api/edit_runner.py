@@ -46,6 +46,27 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 
+# Map the stored edit operation to its credit cost key (see credits._costs()).
+_EDIT_OP_COST_KEY = {
+    "tts": "tts",
+    "music": "music",
+    "split_screen": "split",
+    "thumbnail": "thumbnail",
+}
+
+
+def _refund_edit_credits(edit_job_id: str, user_id: str | None) -> None:
+    """Return an edit job's credits after a failure. The cost op is read from the
+    stored EditJob.operation. Idempotent on the edit job id."""
+    from agents.long_to_shorts.api.credits import refund_for_op
+    from agents.long_to_shorts.api.edit_job_store import edit_job_store
+
+    job = edit_job_store.get(edit_job_id)
+    op = _EDIT_OP_COST_KEY.get(getattr(job, "operation", None)) if job else None
+    if op:
+        refund_for_op(user_id, op, key=f"refund:{edit_job_id}")
+
+
 # ---------------------------------------------------------------------------
 # TTS script generation (summary -> narration script) via the configured LLM
 # ---------------------------------------------------------------------------
@@ -196,7 +217,9 @@ def _probe_duration(path: Path) -> float:
 # ---------------------------------------------------------------------------
 
 @job_log_scope
-def run_tts_edit_job(edit_job_id: str, request: "TTSEditRequest") -> None:
+def run_tts_edit_job(
+    edit_job_id: str, request: "TTSEditRequest", user_id: str | None = None
+) -> None:
     """Execute a single TTS edit job and persist the result.
 
     Three modes:
@@ -336,6 +359,7 @@ def run_tts_edit_job(edit_job_id: str, request: "TTSEditRequest") -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("[edit:%s] tts failed: %s", edit_job_id, exc)
         edit_job_store.update(edit_job_id, status="failed", error=str(exc))
+        _refund_edit_credits(edit_job_id, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +398,9 @@ def _fetch_music_for_theme(theme: str) -> Optional[Path]:
 
 
 @job_log_scope
-def run_music_edit_job(edit_job_id: str, request: "MusicEditRequest") -> None:
+def run_music_edit_job(
+    edit_job_id: str, request: "MusicEditRequest", user_id: str | None = None
+) -> None:
     """Execute a music-mix edit job and persist the result.
 
     Resolves the source clip via job_store, fetches/uses a music file, mixes
@@ -447,6 +473,7 @@ def run_music_edit_job(edit_job_id: str, request: "MusicEditRequest") -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("[edit:%s] music failed: %s", edit_job_id, exc)
         edit_job_store.update(edit_job_id, status="failed", error=str(exc))
+        _refund_edit_credits(edit_job_id, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +530,7 @@ def _resolve_background(
 
 @job_log_scope
 def run_split_screen_edit_job(
-    edit_job_id: str, request: "SplitScreenEditRequest",
+    edit_job_id: str, request: "SplitScreenEditRequest", user_id: str | None = None,
 ) -> None:
     """Compose a 9:16 split-screen with the source clip on top and the
     resolved background on the bottom. Reuses ``compose_video``.
@@ -565,6 +592,7 @@ def run_split_screen_edit_job(
     except Exception as exc:  # noqa: BLE001
         logger.exception("[edit:%s] split-screen failed: %s", edit_job_id, exc)
         edit_job_store.update(edit_job_id, status="failed", error=str(exc))
+        _refund_edit_credits(edit_job_id, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +600,9 @@ def run_split_screen_edit_job(
 # ---------------------------------------------------------------------------
 
 @job_log_scope
-def run_thumbnail_edit_job(edit_job_id: str, request: "ThumbnailEditRequest") -> None:
+def run_thumbnail_edit_job(
+    edit_job_id: str, request: "ThumbnailEditRequest", user_id: str | None = None
+) -> None:
     """Generate an AI-directed thumbnail for an existing clip and persist it.
 
     Resolves the source clip via job_store, then reuses the shared
@@ -637,6 +667,7 @@ def run_thumbnail_edit_job(edit_job_id: str, request: "ThumbnailEditRequest") ->
     except Exception as exc:  # noqa: BLE001
         logger.exception("[edit:%s] thumbnail failed: %s", edit_job_id, exc)
         edit_job_store.update(edit_job_id, status="failed", error=str(exc))
+        _refund_edit_credits(edit_job_id, user_id)
 
 
 __all__ = [

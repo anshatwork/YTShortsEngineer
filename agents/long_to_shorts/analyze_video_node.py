@@ -518,8 +518,16 @@ def _analyze_video_impl(state: LongToShortsState) -> Dict[str, Any]:
             )
             try:
                 def _invoke() -> str:
-                    seg = llm.parse(user_prompt, HookSegment, system=_ANALYSIS_SYSTEM)
-                    return seg.model_dump_json()
+                    def _call() -> str:
+                        seg = llm.parse(user_prompt, HookSegment, system=_ANALYSIS_SYSTEM)
+                        return seg.model_dump_json()
+                    # Route the real model call through the inference scheduler
+                    # for global GPU concurrency control (cache key unchanged).
+                    from tools.llm.inference import run_scheduled, scheduler_enabled
+                    if scheduler_enabled():
+                        from core.inference import Priority
+                        return run_scheduled(_call, priority=Priority.INTERACTIVE)
+                    return _call()
 
                 raw_text = cached_llm_text(
                     user_prompt,

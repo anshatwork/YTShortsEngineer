@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { AlertTriangle } from "lucide-react";
 import { useSubmitJob } from "@/hooks/useSubmitJob";
 import { useUploadAsset } from "@/hooks/useEditJob";
+import { useYouTubeAuthStatus } from "@/hooks/useYouTube";
 import { isValidYouTubeUrl, cn } from "@/lib/utils";
 import { pushDebug } from "@/lib/debugLog";
 import { ConfigPanel } from "./ConfigPanel";
@@ -42,9 +44,12 @@ export function JobForm() {
   const [thumbnailStyle, setThumbnailStyle] = useState<ThumbnailStyle>("auto");
   const [addIntro, setAddIntro] = useState(true);
   const [userContext, setUserContext] = useState("");
+  const [autoUpload, setAutoUpload] = useState(false);
 
   const { mutate, isPending } = useSubmitJob();
   const upload = useUploadAsset();
+  const { data: ytAuth } = useYouTubeAuthStatus();
+  const ytConnected = ytAuth?.connected ?? false;
 
   const busy = isPending || videoUploading || srtUploading;
 
@@ -106,6 +111,8 @@ export function JobForm() {
       thumbnail_style: thumbnailStyle,
       add_intro: addIntro,
       user_context: userContext.trim() || undefined,
+      auto_upload: autoUpload,
+      auto_upload_privacy: "public" as const,
     };
 
     let body: JobRequest;
@@ -294,6 +301,60 @@ export function JobForm() {
           addIntro={addIntro} setAddIntro={setAddIntro}
           disabled={busy}
         />
+      </fieldset>
+
+      {/* AUTO-PUBLISH (opt-in, decided before the run) */}
+      <fieldset className="space-y-3 pt-6 pb-7">
+        <legend className="kicker mb-3">Auto-publish</legend>
+        <label
+          className={cn(
+            "flex items-start gap-3 border border-ink bg-paper px-3 py-3 cursor-pointer",
+            autoUpload && "border-[var(--color-mark)]",
+            busy && "cursor-not-allowed opacity-60",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={autoUpload}
+            disabled={busy}
+            onChange={(e) => setAutoUpload(e.target.checked)}
+            className="mt-0.5 accent-[var(--color-mark)] w-4 h-4 shrink-0"
+          />
+          <span className="min-w-0">
+            <span className="block font-mono text-[11px] tracking-[0.16em] uppercase text-ink">
+              Auto-upload every clip to YouTube as{" "}
+              <span className="text-[var(--color-mark)]">public</span>
+            </span>
+            <span className="block font-mono text-[10px] leading-relaxed tracking-[0.04em] text-ink-soft mt-1">
+              When the pipeline finishes, all generated clips are published to
+              your connected channel automatically — with their AI-generated
+              titles, descriptions &amp; tags, and no per-clip review.
+            </span>
+          </span>
+        </label>
+
+        {autoUpload && (
+          <p
+            className={cn(
+              "flex items-start gap-1.5 font-mono text-[10px] leading-relaxed tracking-[0.04em]",
+              ytConnected ? "text-[var(--color-mark)]" : "text-ink-muted",
+            )}
+          >
+            <AlertTriangle size={12} strokeWidth={1.6} className="mt-[1px] shrink-0" />
+            {ytConnected ? (
+              <span>
+                Clips will go live publicly on your channel as soon as they
+                render. Double-check this is what you want before dispatching.
+              </span>
+            ) : (
+              <span>
+                No YouTube account connected yet — connect one (navbar or a clip’s
+                Publish dialog) before the job finishes, or the uploads are
+                skipped and the clips just wait in your workspace.
+              </span>
+            )}
+          </p>
+        )}
       </fieldset>
 
       {/* Submit */}

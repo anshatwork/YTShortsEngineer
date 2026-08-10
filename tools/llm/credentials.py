@@ -22,6 +22,7 @@ user's provider with their key and does **not** fall back to our Ollama GPU.
 from __future__ import annotations
 
 import contextvars
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Optional
@@ -30,6 +31,15 @@ from typing import Iterator, Optional
 # BaseLLMProvider implementation that accepts an api_key belong here. Extend as
 # more providers gain BYOK support (see tools.llm._construct).
 BYOK_PROVIDERS = ("claude",)
+
+
+def local_only() -> bool:
+    """True when ``LLM_LOCAL_ONLY`` forces every LLM call onto the local Ollama
+    model, ignoring any BYOK credential and the ``LLM_PROVIDER`` env. This is the
+    single kill-switch for "no plan/API LLM, ever": when set, no request can reach
+    a hosted provider (Claude/GLM/HF), regardless of stored user keys. Default off
+    keeps the SaaS BYOK path intact."""
+    return os.getenv("LLM_LOCAL_ONLY", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def redact_key(value: Optional[str]) -> str:
@@ -81,6 +91,7 @@ def llm_credential_context(cred: Optional[LLMCredential]) -> Iterator[None]:
 
 
 __all__ = [
+    "local_only",
     "LLMCredential",
     "BYOK_PROVIDERS",
     "current_llm_credential",

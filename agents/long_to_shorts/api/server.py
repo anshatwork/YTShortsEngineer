@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 # ── Ensure project root is on sys.path when run directly ──────────────────
-_PROJECT_ROOT = Path(__file__).resolve().parents[4]  # …/YTShortsEnginer
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]  # …/YTShortsEnginer
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -88,8 +88,8 @@ def main() -> None:
 
     print(
         f"\n  LongToShorts API\n"
-        f"  http://{args.host}:{args.port}/docs  ← Swagger UI\n"
-        f"  http://{args.host}:{args.port}/redoc ← ReDoc UI\n"
+        f"  http://{args.host}:{args.port}/docs  -> Swagger UI\n"
+        f"  http://{args.host}:{args.port}/redoc -> ReDoc UI\n"
     )
 
     uvicorn.run(

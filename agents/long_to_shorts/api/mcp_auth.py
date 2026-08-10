@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 _DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 
+# Path the MCP ASGI app is mounted at in app.py. Kept here so the OAuth base_url
+# and the mount stay in sync.
+MCP_MOUNT_PATH = "/mcp"
+
 
 def _auth_disabled() -> bool:
     """Whether MCP auth is intentionally off (dev only), mirroring auth.py.
@@ -79,13 +83,20 @@ def build_auth_provider():
 
     from fastmcp.server.auth.providers.supabase import SupabaseProvider
 
+    # The OAuth resource IS the MCP endpoint, which is mounted at /mcp (see
+    # app.py MCP_MOUNT_PATH). MCP_PUBLIC_URL is the origin root (kept that way so
+    # /static artifact URLs stay correct), so we append the mount path here for
+    # the provider's base_url. app.py serves this provider's RFC 9728 metadata
+    # routes at the origin root so discovery resolves.
+    mcp_base_url = public_url.rstrip("/") + MCP_MOUNT_PATH
+
     logger.info(
         "MCP auth enabled — SupabaseProvider(project=%s, base=%s, alg=%s)",
-        supabase_url, public_url, algorithm,
+        supabase_url, mcp_base_url, algorithm,
     )
     return SupabaseProvider(
         project_url=supabase_url,
-        base_url=public_url,
+        base_url=mcp_base_url,
         algorithm=algorithm,  # type: ignore[arg-type]
     )
 

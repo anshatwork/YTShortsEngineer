@@ -116,6 +116,102 @@ class SupabaseSubscriptionStore:
         )
 
 
-subscription_store = SupabaseSubscriptionStore()
+class _MemorySubscriptionStore:
+    """Thread-safe in-memory subscription store (development / testing).
 
-__all__ = ["SupabaseSubscriptionStore", "subscription_store"]
+    Mirrors the SupabaseSubscriptionStore surface so routes/webhooks need no
+    changes. Job-usage counting has no clip_jobs table to read here, so
+    ``jobs_used_this_period`` returns 0 — the legacy job-count quota is only
+    enforced against a real Supabase backend anyway (see quota.quota_enforced),
+    and credits are the primary meter (see credits.py / credit_store.py).
+    """
+
+    def __init__(self) -> None:
+        import threading
+        self._lock = threading.Lock()
+        self._rows: dict[str, dict] = {}
+
+    def get(self, user_id: str) -> Optional[dict]:
+        with self._lock:
+            row = self._rows.get(user_id)
+            return dict(row) if row else None
+
+    def effective_plan(self, user_id: str) -> str:
+        row = self.get(user_id)
+        if not row:
+            return "free"
+        if row.get("status") in _ACTIVE_STATUSES:
+            return row.get("plan", "free")
+        return "free"
+
+    def jobs_used_this_period(self, user_id: str) -> int:
+        return 0
+
+    def find_by_provider_subscription(
+        self, provider: str, provider_subscription_id: str
+    ) -> Optional[dict]:
+        with self._lock:
+            for row in self._rows.values():
+                if (row.get("provider") == provider
+                        and row.get("provider_subscription_id") == provider_subscription_id):
+                    return dict(row)
+        return None
+
+    def update_status(
+        self, user_id: str, *, status: str, current_period_end: Optional[str] = None
+    ) -> None:
+        with self._lock:
+            row = self._rows.get(user_id)
+            if row is None:
+                return
+            row["status"] = status
+            if current_period_end is not None:
+                row["current_period_end"] = current_period_end
+
+    def upsert_from_webhook(
+        self,
+        *,
+        user_id: str,
+        plan: str,
+        status: str,
+        provider: str,
+        provider_customer_id: Optional[str] = None,
+        provider_subscription_id: Optional[str] = None,
+        current_period_end: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            self._rows[user_id] = {
+                "user_id": user_id,
+                "plan": plan,
+                "status": status,
+                "provider": provider,
+                "provider_customer_id": provider_customer_id,
+                "provider_subscription_id": provider_subscription_id,
+                "current_period_end": current_period_end,
+            }
+
+    # Test/reset helper (mirrors _MemoryJobStore._jobs.clear()).
+    def _clear(self) -> None:
+        with self._lock:
+            self._rows.clear()
+
+
+def _make_subscription_store():
+    """Pick the backend. Defaults to supabase whenever SUPABASE_URL is set (so
+    existing deployments keep their behaviour without a new env var) and to
+    memory otherwise; SUBSCRIPTION_STORE=memory|supabase forces either."""
+    import os
+    default = "supabase" if os.environ.get("SUPABASE_URL") else "memory"
+    backend = os.getenv("SUBSCRIPTION_STORE", default).lower()
+    if backend == "supabase":
+        return SupabaseSubscriptionStore()
+    return _MemorySubscriptionStore()
+
+
+subscription_store = _make_subscription_store()
+
+__all__ = [
+    "SupabaseSubscriptionStore",
+    "_MemorySubscriptionStore",
+    "subscription_store",
+]

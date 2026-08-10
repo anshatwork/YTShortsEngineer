@@ -46,7 +46,12 @@ _INSTRUCTIONS = (
     "clips by keyword or id."
 )
 
-mcp: FastMCP = FastMCP(name="YTShortsEngine", instructions=_INSTRUCTIONS, auth=build_auth_provider())
+# Built once so app.py can register the provider's RFC 9728 discovery routes on
+# the parent app root (see app.py) — otherwise a subpath-mounted MCP server
+# advertises metadata the client can't reach.
+auth_provider = build_auth_provider()
+
+mcp: FastMCP = FastMCP(name="YTShortsEngine", instructions=_INSTRUCTIONS, auth=auth_provider)
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +192,118 @@ async def list_jobs(limit: int = 50, offset: int = 0) -> dict:
 async def get_usage() -> dict:
     """Get the user's plan, jobs used this month, and remaining quota."""
     return await _json("GET", "/api/v1/usage")
+
+
+# ---------------------------------------------------------------------------
+# Autonomous Publishing Agent (discover → approve source → generate → score →
+# eval → approve upload → publish). Two human gates; everything else is
+# autonomous. Same submit → poll shape, plus two approval tools.
+# ---------------------------------------------------------------------------
+
+def _rewrite_publishing(job: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite the selected clip's artifact paths to public URLs."""
+    clip = job.get("selected_clip")
+    if isinstance(clip, dict):
+        clip["url"] = _to_url(clip.get("path"))
+        clip["thumbnail_url"] = _to_url(clip.get("thumbnail_path"))
+    return job
+
+
+@mcp.tool
+async def start_publishing(
+    query: str,
+    top_n_candidates: Optional[int] = None,
+    top_n_clips: int = 3,
+    days_ago: int = 7,
+    user_context: Optional[str] = None,
+    add_subtitles: bool = False,
+    add_top_text: bool = False,
+    add_intro: bool = True,
+    add_music: bool = False,
+    add_thumbnail: bool = True,
+    clip_mode: str = "portrait",
+) -> dict:
+    """Start an autonomous publishing run from a natural-language request.
+
+    The agent searches YouTube, ranks candidates and stops at the FIRST human
+    gate: it returns a job whose status becomes 'waiting_for_source_approval'
+    with a `candidates` list (each has a video, why_selected, expected_clip_quality,
+    hook_potential, topic_relevance). Poll `get_publishing`; then call
+    `approve_source` with the chosen video_url. After generation + automatic
+    scoring/evaluation it stops at 'waiting_for_upload_approval' with a
+    `selected_clip` + `eval_report`; call `approve_upload` to publish.
+    """
+    body = {
+        "query": query,
+        "top_n_candidates": top_n_candidates,
+        "top_n_clips": top_n_clips,
+        "days_ago": days_ago,
+        "user_context": user_context,
+        "add_subtitles": add_subtitles,
+        "add_top_text": add_top_text,
+        "add_intro": add_intro,
+        "add_music": add_music,
+        "add_thumbnail": add_thumbnail,
+        "clip_mode": clip_mode,
+    }
+    return _rewrite_publishing(await _json("POST", "/api/v1/publishing", json=body))
+
+
+@mcp.tool
+async def get_publishing(publishing_job_id: str) -> dict:
+    """Get the full state of a publishing run: status, phase_detail, ranked
+    `candidates` (at the source gate), and the `selected_clip` + `eval_report`
+    (at the upload gate)."""
+    return _rewrite_publishing(await _json("GET", f"/api/v1/publishing/{publishing_job_id}"))
+
+
+@mcp.tool
+async def list_publishing(limit: int = 50, offset: int = 0) -> dict:
+    """List the current user's autonomous publishing runs, most recent first."""
+    return await _json("GET", "/api/v1/publishing",
+                       params={"limit": limit, "offset": offset})
+
+
+@mcp.tool
+async def approve_source(
+    publishing_job_id: str, action: str = "approve", video_url: Optional[str] = None
+) -> dict:
+    """Human decision #1. `action` is 'approve' (requires `video_url` — one of the
+    candidate URLs), 'reject', or 'refresh' (re-run discovery). On approve the run
+    advances to clip generation; poll `get_publishing` until it reaches
+    'waiting_for_upload_approval'."""
+    body = {"action": action, "video_url": video_url}
+    return _rewrite_publishing(
+        await _json("POST", f"/api/v1/publishing/{publishing_job_id}/approve-source", json=body)
+    )
+
+
+@mcp.tool
+async def approve_upload(
+    publishing_job_id: str,
+    action: str = "approve",
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    hashtags: Optional[list[str]] = None,
+) -> dict:
+    """Human decision #2, at the upload gate. `action` is 'approve' (publish to
+    YouTube), 'reject', 'regenerate' (make fresh clips), or 'edit_metadata' (patch
+    the selected clip's title/description/hashtags and stay at the gate). YouTube
+    must already be connected in the web app. Note: unverified OAuth apps upload as
+    'private'."""
+    body: dict[str, Any] = {"action": action}
+    if action == "edit_metadata":
+        body["metadata"] = {"title": title, "description": description, "hashtags": hashtags}
+    return _rewrite_publishing(
+        await _json("POST", f"/api/v1/publishing/{publishing_job_id}/approve-upload", json=body)
+    )
+
+
+@mcp.tool
+async def publishing_metrics() -> dict:
+    """Inference scheduler + YouTube quota observability: queue depth, running,
+    latency, cache hit rate, model switches, and remaining YouTube quota units."""
+    return await _json("GET", "/api/v1/publishing/metrics")
 
 
 @mcp.tool
@@ -499,4 +616,4 @@ async def fetch(id: str) -> dict:
 
 mcp_asgi_app = mcp.http_app(path="/")
 
-__all__ = ["mcp", "mcp_asgi_app"]
+__all__ = ["mcp", "mcp_asgi_app", "auth_provider"]

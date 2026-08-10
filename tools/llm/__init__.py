@@ -128,7 +128,12 @@ def get_llm() -> BaseLLMProvider:
     must never silently spend our compute. Otherwise use the env-configured
     provider (the GPU Ollama default in production), with the usual fallback chain.
     """
-    from tools.llm.credentials import current_llm_credential, redact_key
+    from tools.llm.credentials import current_llm_credential, local_only, redact_key
+
+    # Hard kill-switch: force local Ollama and ignore BYOK + LLM_PROVIDER entirely,
+    # so no request can reach a hosted provider (Claude/GLM/HF). Default off.
+    if local_only():
+        return _construct("ollama")
 
     cred = current_llm_credential.get()
     if cred is not None:

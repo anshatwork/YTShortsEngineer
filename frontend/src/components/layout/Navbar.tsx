@@ -4,12 +4,14 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { YouTubeConnect } from "./YouTubeConnect";
+import { UsageMeter } from "./UsageMeter";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useDiscoverSuggestions } from "@/hooks/useDiscoverSuggestions";
 
 const navLinks = [
   { href: "/workspace", label: "WORKSPACE" },
   { href: "/discover", label: "DISCOVER" },
+  { href: "/publishing", label: "PUBLISH" },
   { href: "/new", label: "NEW JOB" },
   { href: "/create", label: "CREATE" },
   { href: "/contact", label: "CONTACT" },
@@ -91,6 +93,7 @@ export function Navbar() {
         {/* Auth controls */}
         {!isLoading && (
           <div className="flex items-center gap-3 shrink-0">
+            {user && <UsageMeter />}
             {(isLocalDev || user) && <YouTubeConnect />}
             {isLocalDev ? (
               <span

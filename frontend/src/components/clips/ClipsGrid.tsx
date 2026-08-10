@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { ClipCard } from "./ClipCard";
+import { BatchPublishBar } from "./BatchPublishBar";
 import { cn } from "@/lib/utils";
 import type { ClipResult } from "@/types/api";
 
@@ -26,6 +27,32 @@ export function ClipsGrid({ clips, jobId }: Props) {
   const [atEnd, setAtEnd] = useState(false);
   const [active, setActive] = useState(0);
   const [isOverflowing, setIsOverflowing] = useState(false);
+
+  // ── Selection (batch upload) — only when this grid belongs to a job. ──────
+  const selectable = !!jobId;
+  // Only clips with a rendered file can be uploaded.
+  const uploadableIds = useMemo(
+    () => clips.filter((c) => !!c.path).map((c) => c.clip_id),
+    [clips],
+  );
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const selectAll = useCallback(
+    () => setSelected(new Set(uploadableIds)),
+    [uploadableIds],
+  );
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const selectedClips = useMemo(
+    () => clips.filter((c) => selected.has(c.clip_id) && !!c.path),
+    [clips, selected],
+  );
 
   const step = useCallback(() => {
     const w =
@@ -105,6 +132,19 @@ export function ClipsGrid({ clips, jobId }: Props) {
         </div>
       </div>
 
+      {selectable && jobId && uploadableIds.length > 0 && (
+        <BatchPublishBar
+          jobId={jobId}
+          selectedClips={selectedClips}
+          uploadableCount={uploadableIds.length}
+          allSelected={
+            selected.size > 0 && selected.size === uploadableIds.length
+          }
+          onSelectAll={selectAll}
+          onClear={clearSelection}
+        />
+      )}
+
       <div
         ref={railRef}
         onScroll={updateEdges}
@@ -118,7 +158,14 @@ export function ClipsGrid({ clips, jobId }: Props) {
             key={clip.clip_id}
             className="snap-start shrink-0 w-[210px] sm:w-[230px]"
           >
-            <ClipCard clip={clip} index={i} jobId={jobId} />
+            <ClipCard
+              clip={clip}
+              index={i}
+              jobId={jobId}
+              selectable={selectable && !!clip.path}
+              selected={selected.has(clip.clip_id)}
+              onToggleSelect={() => toggleSelect(clip.clip_id)}
+            />
           </div>
         ))}
       </div>
