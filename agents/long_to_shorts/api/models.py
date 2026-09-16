@@ -192,7 +192,12 @@ class JobStatus(BaseModel):
     updated_at: datetime
     clips: Optional[List[ClipResult]] = Field(
         default=None,
-        description="Present only when status == 'done'.",
+        description=(
+            "Rendered clips. Populated incrementally while status == 'running' — "
+            "clips appear as soon as they're extracted and refine in place as "
+            "enhancement stages finish — and is complete when status == 'done'. "
+            "A given clip is playable once its `path` is non-null."
+        ),
     )
     error: Optional[str] = Field(
         default=None,

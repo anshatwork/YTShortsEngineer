@@ -218,6 +218,11 @@ async def stripe_webhook(request: Request) -> dict:
 
     etype = event["type"]
     obj = event["data"]["object"]
+    event_id = event.get("id")
+    if event_id:
+        from agents.long_to_shorts.api.db.payment_event_store import payment_event_store
+        if not payment_event_store.claim("stripe", event_id):
+            return {"received": True, "duplicate": True}
     logger.info("Stripe webhook — id=%s type=%s", event.get("id"), etype)
 
     from agents.long_to_shorts.api.db.subscription_store import subscription_store
@@ -279,6 +284,11 @@ async def razorpay_webhook(request: Request) -> dict:
     import json
     event = json.loads(payload)
     etype = event.get("event", "")
+    event_id = event.get("id") or event.get("event_id")
+    if event_id:
+        from agents.long_to_shorts.api.db.payment_event_store import payment_event_store
+        if not payment_event_store.claim("razorpay", event_id):
+            return {"received": True, "duplicate": True}
     logger.info("Razorpay webhook — type=%s", etype)
 
     sub_entity = (

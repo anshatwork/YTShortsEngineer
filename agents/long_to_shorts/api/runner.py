@@ -55,6 +55,35 @@ def _refund_clip_credits(job_id: str, user_id: str | None) -> None:
     refund_for_op(user_id, "clip", key=f"refund:{job_id}")
 
 
+def _clips_from_state(state: dict) -> list:
+    """Convert the pipeline's ``generated_clips`` ClipObject dicts → ClipResult models.
+
+    Reused for both incremental mid-run persistence and the terminal write, so the
+    frontend can surface playable clips as soon as they're extracted and keep them
+    updating in place as enhancement nodes refine each clip.
+    """
+    from agents.long_to_shorts.api.models import ClipResult
+
+    return [
+        ClipResult(
+            clip_id=c["clip_id"],
+            path=c.get("path"),
+            timestamp_range=tuple(c["timestamp_range"]),
+            hook_score=c["hook_score"],
+            title=c.get("title"),
+            summary=c.get("summary"),
+            hook_text=c.get("hook_text"),
+            hashtags=c.get("hashtags"),
+            thumbnail_path=c.get("thumbnail_path"),
+            music_theme=c.get("music_theme"),
+            music_title=c.get("music_title"),
+            music_source=c.get("music_source"),
+            music_attribution=c.get("music_attribution"),
+        )
+        for c in state.get("generated_clips", [])
+    ]
+
+
 def _resolve_byok_credential(user_id: str | None, job_id: str):
     """Return the user's BYOK LLMCredential, or None to use our default provider.
 
@@ -95,7 +124,6 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
     """
     # Late imports keep module load fast (heavy deps: torch, whisper, ffmpeg…)
     from agents.long_to_shorts.api.job_store import job_store
-    from agents.long_to_shorts.api.models import ClipResult
     from agents.long_to_shorts import long_to_shorts_app
     import time
 
@@ -218,8 +246,29 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
 
         t0 = time.time()
         logger.info("[job:%s] invoking LangGraph pipeline …", job_id)
+        # Stream (not invoke) so we can persist clips incrementally: as soon as a
+        # node yields a state with rendered clips, write them to the job store.
+        # EventEmittingStore turns each update() into an SSE `update`, so the
+        # frontend surfaces playable clips mid-run instead of waiting for `done`.
+        # `stream_mode="values"` yields the full accumulated state after each
+        # super-step, so the last value is the complete final state.
+        final_state = initial_state
+        last_clip_sig: tuple | None = None
         with llm_credential_context(byok_credential):
-            final_state = long_to_shorts_app.invoke(initial_state)
+            for state in long_to_shorts_app.stream(
+                initial_state, stream_mode="values"
+            ):
+                final_state = state
+                partial = _clips_from_state(state)
+                if not partial:
+                    continue
+                # Only emit when the clip set actually changed (a new clip or an
+                # updated path) — avoids an SSE frame for nodes that don't touch
+                # clips. status stays "running"; the terminal write flips it.
+                sig = tuple((c.clip_id, c.path) for c in partial)
+                if sig != last_clip_sig:
+                    last_clip_sig = sig
+                    job_store.update(job_id, clips=partial)
         elapsed = time.time() - t0
 
         # ----------------------------------------------------------------
@@ -234,24 +283,7 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
         # ----------------------------------------------------------------
         # Phase 5: Convert ClipObject dicts → ClipResult Pydantic models
         # ----------------------------------------------------------------
-        clips = [
-            ClipResult(
-                clip_id=c["clip_id"],
-                path=c.get("path"),
-                timestamp_range=tuple(c["timestamp_range"]),
-                hook_score=c["hook_score"],
-                title=c.get("title"),
-                summary=c.get("summary"),
-                hook_text=c.get("hook_text"),
-                hashtags=c.get("hashtags"),
-                thumbnail_path=c.get("thumbnail_path"),
-                music_theme=c.get("music_theme"),
-                music_title=c.get("music_title"),
-                music_source=c.get("music_source"),
-                music_attribution=c.get("music_attribution"),
-            )
-            for c in final_state.get("generated_clips", [])
-        ]
+        clips = _clips_from_state(final_state)
 
         job_store.update(job_id, status="done", clips=clips, current_node="done")
 

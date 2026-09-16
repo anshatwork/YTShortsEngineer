@@ -71,6 +71,10 @@ _queue_lock = threading.Lock()
 
 def _make_queue() -> TaskQueue:
     backend = os.getenv("TASK_QUEUE_BACKEND", "threadpool").lower()
+    if backend == "sqs":
+        from core.execution.sqs_taskqueue import SqsTaskQueue
+
+        return SqsTaskQueue()
     workers = int(os.getenv("WORKER_THREADS", "2"))
     if backend in ("celery", "temporal", "rq"):
         logger.warning(

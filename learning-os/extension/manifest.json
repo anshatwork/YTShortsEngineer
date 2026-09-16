@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Remember this — AI Learning OS",
+  "version": "0.0.0",
+  "description": "Save the current page or video to your personal knowledge graph.",
+  "permissions": ["activeTab", "storage", "contextMenus", "notifications"],
+  "host_permissions": ["http://localhost:8080/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Remember this"
+  }
+}

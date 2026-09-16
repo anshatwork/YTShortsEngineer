@@ -108,8 +108,13 @@ def enforce_and_debit(user_id: str, op: str) -> None:
             ),
         )
     except Exception as exc:  # noqa: BLE001 — fail open on a transient ledger error
-        logger.warning("Credit check failed for user=%s op=%s (%s); allowing.",
+        logger.warning("Credit check failed for user=%s op=%s (%s).",
                        user_id, op, type(exc).__name__)
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Credit service is temporarily unavailable; retry shortly.",
+            ) from exc
         return
 
 

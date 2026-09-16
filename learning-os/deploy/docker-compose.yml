@@ -1,0 +1,101 @@
+# AI Learning OS — Phase 0 stack.
+# Build context is the learning-os root (..) so the Dockerfile can copy pyproject + los.
+# Bring up:  docker compose up -d   |   apply schema:  docker compose run --rm migrate
+
+name: learning-os
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: los
+      POSTGRES_PASSWORD: los
+      POSTGRES_DB: learning_os
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U los -d learning_os"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2
+    command: ["-js", "-m", "8222"]     # -js enables JetStream; -m exposes monitoring on 8222
+    ports: ["4222:4222", "8222:8222"]
+    volumes: ["natsdata:/data"]
+
+  # ── Reserved for Phase 1+ (declared now so the topology is stable) ─────────
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/please_change_me
+    ports: ["7474:7474", "7687:7687"]
+    volumes: ["neo4jdata:/data"]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: ["qdrantdata:/qdrant/storage"]
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["miniodata:/data"]
+
+  # ── One-shot schema migration ──────────────────────────────────────────────
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: los
+    volumes:
+      - ../migrations:/migrations:ro
+    entrypoint:
+      - sh
+      - -c
+      - 'set -e; for f in /migrations/*.sql; do echo "applying $$f"; psql -h postgres -U los -d learning_os -f "$$f"; done; echo "migrations complete"'
+    restart: "no"
+
+  # ── Application services ────────────────────────────────────────────────────
+  ingestion:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["uvicorn", "los.services.ingestion.app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+    environment:
+      BROKER_BACKEND: nats
+      EVENT_STORE_BACKEND: postgres
+      CONTENT_STORE_BACKEND: postgres
+      NATS_URL: nats://nats:4222
+      PG_DSN: postgresql://los:los@postgres:5432/learning_os
+      AUTH_DISABLED: "1"
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_started }
+    ports: ["8081:8081"]
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["uvicorn", "los.services.gateway.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      INGESTION_URL: http://ingestion:8081
+      AUTH_DISABLED: "1"
+    depends_on:
+      ingestion: { condition: service_started }
+    ports: ["8080:8080"]
+
+volumes:
+  pgdata:
+  natsdata:
+  neo4jdata:
+  qdrantdata:
+  miniodata:

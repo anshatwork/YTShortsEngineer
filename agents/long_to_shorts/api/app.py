@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,6 +38,7 @@ except ImportError:
     pass
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -44,6 +46,16 @@ logger = logging.getLogger(__name__)
 _access_logger = logging.getLogger("longtoshorts.access")
 
 _WORKER_THREADS = 2  # concurrent pipeline jobs
+_RATE_BUCKETS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_RATE_WINDOW_SECONDS = 60.0
+
+
+def _rate_limit_for(path: str) -> int | None:
+    if path.endswith("/checkout"):
+        return int(os.getenv("RATE_LIMIT_CHECKOUT_PER_MINUTE", "20"))
+    if path.endswith("/jobs") and path.startswith("/api/"):
+        return int(os.getenv("RATE_LIMIT_JOBS_PER_MINUTE", "30"))
+    return None
 
 # Set in the router/mount section below when MCP is enabled. The lifespan reads
 # it at startup (after the module is fully imported) to also run the mounted MCP
@@ -251,6 +263,31 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def _rate_limit_requests(request: Request, call_next):
+    """Small-host protection for expensive endpoints.
+
+    Cloudflare/WAF should provide the distributed limit once the API is scaled;
+    this process-local guard still prevents accidental launch-time abuse.
+    """
+    limit = _rate_limit_for(request.url.path)
+    if limit is not None:
+        identity = request.client.host if request.client else "unknown"
+        key = (identity, request.url.path)
+        now = time.monotonic()
+        bucket = _RATE_BUCKETS[key]
+        while bucket and now - bucket[0] >= _RATE_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests; retry shortly."},
+                headers={"Retry-After": "60"},
+            )
+        bucket.append(now)
+    return await call_next(request)
 
 
 @app.middleware("http")

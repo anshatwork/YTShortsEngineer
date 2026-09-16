@@ -45,6 +45,9 @@ here. Horizons: **Now** (in-flight/next sprint), **Next** (this quarter), **Late
   long-form video (new product surface, no rendering).
 - **Memory system.** `docs/future/memory-system.md` — episodic/semantic/vector memory for
   per-creator personalization.
+- **AI Learning OS.** `docs/future/ai-learning-os.md` — event-sourced microservices platform that
+  turns saved content into a per-user knowledge graph + adaptive learning assets, built on the
+  `core/kg` substrate. Umbrella spec composing training-agent/memory-system/gallery as services.
 
 ## Research
 

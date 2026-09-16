@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px/1.4 system-ui, sans-serif; width: 300px; padding: 12px; margin: 0; }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      button { width: 100%; padding: 8px; font-size: 13px; cursor: pointer; }
+      input { width: 100%; box-sizing: border-box; padding: 6px; margin: 4px 0; }
+      .row { margin-top: 8px; }
+      .status { margin-top: 10px; min-height: 18px; color: #333; }
+      details { margin-top: 10px; }
+      summary { cursor: pointer; color: #666; }
+      label { color: #666; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>AI Learning OS</h1>
+    <button id="remember">Remember this page</button>
+    <div class="status" id="status"></div>
+
+    <details>
+      <summary>Settings</summary>
+      <div class="row">
+        <label>Gateway URL</label>
+        <input id="gatewayUrl" placeholder="http://localhost:8080" />
+        <label>Bearer token (Supabase JWT; blank in dev)</label>
+        <input id="token" placeholder="eyJ…" />
+        <button id="save">Save settings</button>
+      </div>
+    </details>
+
+    <script src="common.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

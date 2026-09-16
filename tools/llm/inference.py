@@ -122,6 +122,8 @@ class ModelRegistry:
             return self.ollama_model(task_class)
         if provider == "glm":
             return os.getenv("GLM_MODEL", "glm-4.5-flash")
+        if provider == "openrouter":
+            return os.getenv("OPENROUTER_MODEL", "openrouter/free")
         return os.getenv("LLM_MODEL_ID") or os.getenv("HF_MODEL_ID") or "default"
 
 

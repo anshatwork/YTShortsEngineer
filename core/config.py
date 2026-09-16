@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
@@ -50,13 +49,18 @@ class Settings(BaseSettings):
     TOP_N_CLIPS: int = Field(default=5, description="Max clips to extract per video")
     
     # Model Configuration
-    LLM_PROVIDER: str = Field(default="claude", description="LLM backend: claude | ollama | glm | hf")
+    LLM_PROVIDER: str = Field(default="claude", description="LLM backend: claude | ollama | openrouter | glm | hf")
     LLM_LOCAL_ONLY: bool = Field(default=False, description="Force all LLM calls onto local Ollama, ignoring LLM_PROVIDER + BYOK (no hosted provider ever)")
     CLAUDE_MODEL: str = Field(default="claude-sonnet-4-6", description="Claude model id")
     # GLM (Z.ai) — free-tier provider. Read via os.getenv() in tools/llm/glm.py;
     # declared here for documentation (extra='ignore' tolerates them in .env).
     GLM_API_KEY: Optional[str] = Field(None, description="Z.ai GLM API key (free tier)")
     GLM_MODEL: str = Field(default="glm-4.5-flash", description="GLM model id (free: glm-4.5-flash | glm-4.7-flash)")
+    OPENROUTER_API_KEY: Optional[str] = Field(None, description="OpenRouter API key")
+    OPENROUTER_BASE_URL: str = Field(default="https://openrouter.ai/api/v1", description="OpenRouter API base URL")
+    OPENROUTER_MODEL: str = Field(default="openrouter/free", description="OpenRouter model id")
+    OPENROUTER_MAX_TOKENS: int = Field(default=1024, description="OpenRouter output token cap")
+    OPENROUTER_TIMEOUT: float = Field(default=60.0, description="OpenRouter request timeout")
     ENABLE_LLM_FALLBACK: bool = Field(default=True, description="Fall back to Ollama when the primary LLM fails")
     LLM_MODEL_ID: str = "zai-org/GLM-4.7"
     WHISPER_MODEL: str = "base"

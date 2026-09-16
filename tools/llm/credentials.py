@@ -30,7 +30,7 @@ from typing import Iterator, Optional
 # Providers a user may bring their own key for. Only providers with a
 # BaseLLMProvider implementation that accepts an api_key belong here. Extend as
 # more providers gain BYOK support (see tools.llm._construct).
-BYOK_PROVIDERS = ("claude",)
+BYOK_PROVIDERS = ("claude", "openrouter")
 
 
 def local_only() -> bool:
