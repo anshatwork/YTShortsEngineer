@@ -56,10 +56,12 @@ def enforce_quota(user_id: str) -> None:
     try:
         plan, used, limit = usage_snapshot(user_id)
     except Exception as exc:  # noqa: BLE001 — fail open on a transient lookup error
-        logger.warning(
-            "Quota check failed for user=%s (%s); allowing job.",
-            user_id, type(exc).__name__,
-        )
+        logger.warning("Quota check failed for user=%s (%s).", user_id, type(exc).__name__)
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Quota service is temporarily unavailable; retry shortly.",
+            ) from exc
         return
     if used >= limit:
         logger.info("Quota exceeded — user=%s plan=%s used=%d limit=%d",

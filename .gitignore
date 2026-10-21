@@ -89,7 +89,11 @@ yarn-error.log*
 
 # Agent / editor tooling (local, not shared)
 .codegraph/
-.claude/
+.claude/*
+# …but DO share the reusable skills and project settings (not local overrides)
+!.claude/skills/
+!.claude/settings.json
+.claude/settings.local.json
 .cursor/
 .gemini/
 .mcp.json

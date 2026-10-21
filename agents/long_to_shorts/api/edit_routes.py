@@ -90,6 +90,10 @@ async def submit_tts(
                 ),
             )
 
+    # Meter the edit before enqueueing (402 if the user is out of credits).
+    from agents.long_to_shorts.api.credits import enforce_and_debit
+    enforce_and_debit(user_id, "tts")
+
     edit_job = edit_job_store.create(
         "tts",
         user_id=user_id,
@@ -103,7 +107,7 @@ async def submit_tts(
 
     from agents.long_to_shorts.api.edit_runner import run_tts_edit_job
     http_request.app.state.task_queue.enqueue(
-        run_tts_edit_job, edit_job.edit_job_id, body
+        run_tts_edit_job, edit_job.edit_job_id, body, user_id
     )
     return edit_job
 
@@ -174,6 +178,9 @@ async def submit_music(
             ),
         )
 
+    from agents.long_to_shorts.api.credits import enforce_and_debit
+    enforce_and_debit(user_id, "music")
+
     edit_job = edit_job_store.create(
         "music",
         user_id=user_id,
@@ -187,7 +194,7 @@ async def submit_music(
 
     from agents.long_to_shorts.api.edit_runner import run_music_edit_job
     http_request.app.state.task_queue.enqueue(
-        run_music_edit_job, edit_job.edit_job_id, body
+        run_music_edit_job, edit_job.edit_job_id, body, user_id
     )
     return edit_job
 
@@ -217,6 +224,9 @@ async def submit_thumbnail(
             ),
         )
 
+    from agents.long_to_shorts.api.credits import enforce_and_debit
+    enforce_and_debit(user_id, "thumbnail")
+
     edit_job = edit_job_store.create(
         "thumbnail",
         user_id=user_id,
@@ -230,7 +240,7 @@ async def submit_thumbnail(
 
     from agents.long_to_shorts.api.edit_runner import run_thumbnail_edit_job
     http_request.app.state.task_queue.enqueue(
-        run_thumbnail_edit_job, edit_job.edit_job_id, body
+        run_thumbnail_edit_job, edit_job.edit_job_id, body, user_id
     )
     return edit_job
 
@@ -287,6 +297,9 @@ async def submit_split_screen(
                 ),
             )
 
+    from agents.long_to_shorts.api.credits import enforce_and_debit
+    enforce_and_debit(user_id, "split")
+
     edit_job = edit_job_store.create(
         "split_screen",
         user_id=user_id,
@@ -300,7 +313,7 @@ async def submit_split_screen(
 
     from agents.long_to_shorts.api.edit_runner import run_split_screen_edit_job
     http_request.app.state.task_queue.enqueue(
-        run_split_screen_edit_job, edit_job.edit_job_id, body
+        run_split_screen_edit_job, edit_job.edit_job_id, body, user_id
     )
     return edit_job
 

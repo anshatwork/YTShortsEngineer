@@ -1,0 +1,77 @@
+asyncapi: 3.0.0
+info:
+  title: AI Learning OS — Domain Events
+  version: 0.0.0
+  description: >
+    Event contracts for the Learning OS. All events share one envelope (CloudEvents-compatible) and
+    are published on the subject `events.<type>`. Phase 0 implements only `ContentSaved`; the rest of
+    the "Remember this" chain is documented here as the target so producers/consumers agree ahead of
+    build.
+
+defaultContentType: application/json
+
+servers:
+  nats:
+    host: localhost:4222
+    protocol: nats
+    description: NATS JetStream — stream LEARNING_OS captures subjects `events.>` (durable, replayable).
+
+channels:
+  ContentSaved:
+    address: events.ContentSaved
+    messages:
+      ContentSaved:
+        $ref: '#/components/messages/ContentSaved'
+  # Phase 1+ channels (declared, not yet produced):
+  #   events.TranscriptExtracted, events.ContentSegmented, events.EmbeddingsGenerated,
+  #   events.ConceptsExtracted, events.KnowledgeGraphUpdated, events.MasteryUpdated,
+  #   events.ClipsGenerated, events.LearningAssetsGenerated
+
+operations:
+  publishContentSaved:
+    action: send
+    channel:
+      $ref: '#/channels/ContentSaved'
+    summary: Content Ingestion emits this after persisting a remembered item.
+
+components:
+  messages:
+    ContentSaved:
+      name: ContentSaved
+      title: Content Saved
+      summary: A user remembered a piece of content; it has been persisted and dedup'd.
+      payload:
+        $ref: '#/components/schemas/Envelope'
+
+  schemas:
+    Envelope:
+      type: object
+      required: [event_id, type, version, stream, owner_id, occurred_at, payload]
+      properties:
+        event_id: { type: string, format: uuid }
+        type: { type: string, example: ContentSaved }
+        version: { type: integer, default: 1, description: Envelope schema version (replay/evolution). }
+        stream: { type: string, example: content-3f2a…, description: Per-aggregate stream id. }
+        seq: { type: integer, description: Per-stream monotonic sequence (assigned by the event store). }
+        owner_id: { type: string, format: uuid, description: Tenant scope — every event is owned. }
+        occurred_at: { type: string, format: date-time }
+        correlation_id: { type: string, format: uuid, description: Per user-action trace id. }
+        causation_id: { type: [string, "null"], format: uuid, description: Parent event id. }
+        payload:
+          $ref: '#/components/schemas/ContentSavedPayload'
+        metadata:
+          type: object
+          additionalProperties: true
+          example: { source_service: ingestion }
+
+    ContentSavedPayload:
+      type: object
+      required: [content_id, source_type, url, content_hash]
+      properties:
+        content_id: { type: string, format: uuid }
+        source_type:
+          type: string
+          enum: [youtube, youtube_shorts, article, documentation]
+        url: { type: string, format: uri, description: Normalized URL (tracking params stripped). }
+        content_hash: { type: string, description: sha256 of the normalized URL (dedup key). }
+        title: { type: [string, "null"] }

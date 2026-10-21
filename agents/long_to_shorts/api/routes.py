@@ -61,9 +61,12 @@ async def submit_job(
             detail="Provide EITHER 'youtube_url' OR 'video_path', not both.",
         )
 
-    # Enforce the caller's monthly plan quota before doing any work (402 if hit).
+    # Meter the run before doing any work: credits are the primary gate (402 if
+    # short), the monthly job quota a secondary guard. Both run pre-enqueue.
     from agents.long_to_shorts.api.quota import enforce_quota
+    from agents.long_to_shorts.api.credits import enforce_and_debit
     enforce_quota(user_id)
+    enforce_and_debit(user_id, "clip")
 
     job = job_store.create(body, user_id=user_id)
     logger.info(
@@ -118,9 +121,11 @@ async def rerun_job(
             ),
         )
 
-    # A rerun is a new job — it counts against the plan quota too.
+    # A rerun is a new job — it is metered like a fresh submission.
     from agents.long_to_shorts.api.quota import enforce_quota
+    from agents.long_to_shorts.api.credits import enforce_and_debit
     enforce_quota(user_id)
+    enforce_and_debit(user_id, "clip")
 
     job = job_store.create(original, user_id=user_id)
     logger.info(
@@ -189,10 +194,15 @@ async def list_jobs(
 )
 async def get_usage(user_id: str = Depends(get_current_user_id)) -> dict:
     from agents.long_to_shorts.api.quota import quota_enforced, usage_snapshot
+    from agents.long_to_shorts.api.credits import credits_snapshot, credits_enforced
+
+    credits = credits_snapshot(user_id)
+    credits["enforced"] = credits_enforced()
 
     if not quota_enforced():
-        # Dev / unmetered deployments — report the free plan with no cap applied.
-        return {"plan": "free", "used": 0, "limit": None, "remaining": None, "enforced": False}
+        # Dev / unmetered deployments — report the free plan with no job cap applied.
+        return {"plan": credits["plan"], "used": 0, "limit": None, "remaining": None,
+                "enforced": False, "credits": credits}
     plan, used, limit = usage_snapshot(user_id)
     return {
         "plan": plan,
@@ -200,4 +210,5 @@ async def get_usage(user_id: str = Depends(get_current_user_id)) -> dict:
         "limit": limit,
         "remaining": max(0, limit - used),
         "enforced": True,
+        "credits": credits,
     }

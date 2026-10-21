@@ -92,8 +92,15 @@ async def _event_stream(
     request: Request,
     channel: str,
     snapshot_getter: Callable[[], Optional[Any]],
+    terminal: Optional[set] = None,
 ):
-    """Async generator yielding SSE frames for one resource channel."""
+    """Async generator yielding SSE frames for one resource channel.
+
+    *terminal* lets a resource with a different status vocabulary (e.g. the
+    publishing workflow: complete/failed/cancelled) override the default
+    done/failed close condition.
+    """
+    term = terminal or _TERMINAL
     bus = get_event_bus()
     sub = bus.subscribe(channel)
     try:
@@ -103,7 +110,7 @@ async def _event_stream(
             return
         snap_data = snapshot.model_dump(mode="json")
         yield _sse_frame("snapshot", snap_data, event_id=str(snap_data.get("updated_at")))
-        if snap_data.get("status") in _TERMINAL:
+        if snap_data.get("status") in term:
             return  # already finished — one snapshot is all the client needs
 
         while True:
@@ -114,7 +121,7 @@ async def _event_stream(
                 yield ": heartbeat\n\n"
                 continue
             yield _sse_frame(event.type, event.data, event_id=event.id)
-            if event.data.get("status") in _TERMINAL:
+            if event.data.get("status") in term:
                 break
     except asyncio.CancelledError:  # pragma: no cover - client disconnect
         raise
@@ -122,9 +129,9 @@ async def _event_stream(
         sub.close()
 
 
-def _stream_response(request: Request, channel: str, snapshot_getter) -> StreamingResponse:
+def _stream_response(request: Request, channel: str, snapshot_getter, terminal=None) -> StreamingResponse:
     return StreamingResponse(
-        _event_stream(request, channel, snapshot_getter),
+        _event_stream(request, channel, snapshot_getter, terminal),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
@@ -178,6 +185,48 @@ async def upload_events(
     return _stream_response(
         request, f"upload:{upload_id}",
         lambda: youtube_upload_store.get_for_user(upload_id, user_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ingestion job stream (knowledge graph)
+# ---------------------------------------------------------------------------
+
+@router.get("/ingest/jobs/{ingestion_job_id}/events", summary="Stream live ingestion progress (SSE)")
+async def ingestion_events(
+    ingestion_job_id: str,
+    request: Request,
+    token: Optional[str] = Query(default=None),
+) -> StreamingResponse:
+    from agents.long_to_shorts.api.ingestion_job_store import ingestion_job_store
+
+    user_id = _user_from_token(token)
+    return _stream_response(
+        request, f"ingest:{ingestion_job_id}",
+        lambda: ingestion_job_store.get_for_user(ingestion_job_id, user_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Publishing workflow stream (autonomous publishing agent)
+# ---------------------------------------------------------------------------
+
+_PUBLISHING_TERMINAL = {"complete", "failed", "cancelled"}
+
+
+@router.get("/publishing/{publishing_job_id}/events", summary="Stream live publishing progress (SSE)")
+async def publishing_events(
+    publishing_job_id: str,
+    request: Request,
+    token: Optional[str] = Query(default=None),
+) -> StreamingResponse:
+    from agents.long_to_shorts.api.publishing_store import publishing_store
+
+    user_id = _user_from_token(token)
+    return _stream_response(
+        request, f"publish:{publishing_job_id}",
+        lambda: publishing_store.get_for_user(publishing_job_id, user_id),
+        terminal=_PUBLISHING_TERMINAL,
     )
 
 

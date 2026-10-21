@@ -9,7 +9,8 @@ Provider-agnostic LLM factory.
     text = llm.generate("...")                       # free text
     obj  = llm.parse("...", MySchema, system="...")   # structured output
 
-Provider selection (env ``LLM_PROVIDER``): ``claude`` (default) | ``ollama`` | ``hf``.
+Provider selection (env ``LLM_PROVIDER``): ``claude`` (default) | ``ollama`` |
+``openrouter`` | ``glm`` | ``hf``.
 When the primary is Claude and ``ENABLE_LLM_FALLBACK`` is truthy, calls that fail
 (API error, missing key, network) transparently fall back to the local Ollama model
 — preserving the existing offline path. Provider classes are imported lazily so the
@@ -54,12 +55,18 @@ def _construct(provider: str, credential=None) -> BaseLLMProvider:
         if credential is not None:
             return GLMLLM(model=credential.model, api_key=credential.api_key)
         return GLMLLM()
+    if provider == "openrouter":
+        from tools.llm.openrouter import OpenRouterLLM
+
+        if credential is not None:
+            return OpenRouterLLM(model=credential.model, api_key=credential.api_key)
+        return OpenRouterLLM()
     if provider == "hf":
         from tools.llm.huggingface import HuggingFaceLLM
 
         return HuggingFaceLLM()
     raise ValueError(
-        f"Unknown LLM_PROVIDER '{provider}' (use claude | ollama | glm | hf)"
+        f"Unknown LLM_PROVIDER '{provider}' (use claude | ollama | openrouter | glm | hf)"
     )
 
 
@@ -126,9 +133,14 @@ def get_llm() -> BaseLLMProvider:
     ``tools.llm.credentials.llm_credential_context``), build the user's provider
     with their key and do **not** fall back to our Ollama GPU — a user's bad key
     must never silently spend our compute. Otherwise use the env-configured
-    provider (the GPU Ollama default in production), with the usual fallback chain.
+    provider. Only the legacy Claude path may opt into the local Ollama fallback.
     """
-    from tools.llm.credentials import current_llm_credential, redact_key
+    from tools.llm.credentials import current_llm_credential, local_only, redact_key
+
+    # Hard kill-switch: force local Ollama and ignore BYOK + LLM_PROVIDER entirely,
+    # so no request can reach a hosted provider (Claude/GLM/HF). Default off.
+    if local_only():
+        return _construct("ollama")
 
     cred = current_llm_credential.get()
     if cred is not None:
@@ -144,7 +156,10 @@ def get_llm() -> BaseLLMProvider:
     try:
         primary = _construct(provider)
     except Exception as exc:  # construction failed (e.g. missing ANTHROPIC_API_KEY)
-        if fallback_enabled and provider != "ollama":
+        # Ollama fallback is deliberately limited to the legacy Claude path.
+        # Hosted OpenRouter failures must surface rather than silently moving
+        # paid/user work onto an undeclared local runtime.
+        if fallback_enabled and provider == "claude":
             logger.warning(
                 "Could not construct '%s' provider (%s); using Ollama.", provider, exc
             )

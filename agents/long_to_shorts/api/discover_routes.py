@@ -40,6 +40,7 @@ from agents.long_to_shorts.fetch_trending_videos import (
     get_topic_keys,
 )
 from core.config import settings
+from core.exceptions import QuotaExceededError
 
 logger = logging.getLogger(__name__)
 
@@ -197,16 +198,25 @@ def discover(
     else:
         fetch_kwargs = dict(topic_overrides=custom_queries)
 
-    result = fetch_trending_videos(
-        days_ago=days_ago,
-        max_results_per_query=max_per_query,
-        order=order,
-        keywords=custom_queries or None,
-        long_form_only=long_form_only,
-        min_duration_seconds=min_seconds,
-        max_duration_seconds=max_seconds,
-        **fetch_kwargs,
-    )
+    try:
+        result = fetch_trending_videos(
+            days_ago=days_ago,
+            max_results_per_query=max_per_query,
+            order=order,
+            keywords=custom_queries or None,
+            long_form_only=long_form_only,
+            min_duration_seconds=min_seconds,
+            max_duration_seconds=max_seconds,
+            **fetch_kwargs,
+        )
+    except QuotaExceededError:
+        # Daily YouTube quota exhausted — serve the cached trending pool (0 units)
+        # so Discover degrades gracefully instead of erroring.
+        logger.warning("Discover — YouTube daily quota exhausted; serving cached trending pool")
+        pool = [v for (v, _dt, _topic) in trending_store.list_pool()]
+        return DiscoverResponse(
+            videos=pool, queries_used=[], total=len(pool), interpretation=interpretation,
+        )
 
     videos = [DiscoverVideo(**v) for v in result["youtube_results"]]
     logger.info(

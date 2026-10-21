@@ -26,6 +26,14 @@ import type {
   YouTubeUploadJob,
   YouTubeUploadListResponse,
   YouTubeUploadRequest,
+  ApproveSourceRequest,
+  ApproveUploadRequest,
+  PublishingJob,
+  PublishingListResponse,
+  PublishingMetrics,
+  PublishingStartRequest,
+  PublishingReviewRequest,
+  UsageResponse,
 } from "@/types/api";
 
 /**
@@ -139,6 +147,10 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
       "/jobs",
     ),
+
+  // Current plan, job-cap usage, and credit balance (for the navbar meter).
+  getUsage: (): Promise<UsageResponse> =>
+    apiFetch<UsageResponse>(`${API_BASE_URL}/usage`, undefined, "/usage"),
 
   // Re-run a job with its original parameters. Returns a NEW job record.
   rerunJob: (jobId: string): Promise<Job> =>
@@ -425,6 +437,52 @@ export const api = {
       `/youtube/uploads${query}`,
     );
   },
+
+  // ─── Autonomous Publishing Agent ────────────────────────────────────────
+  startPublishing: (body: PublishingStartRequest): Promise<PublishingJob> =>
+    apiFetch<PublishingJob>(
+      `${API_BASE_URL}/publishing`,
+      { method: "POST", body: JSON.stringify(body) },
+      "/publishing",
+    ),
+
+  listPublishing: (): Promise<PublishingListResponse> =>
+    apiFetch<PublishingListResponse>(`${API_BASE_URL}/publishing`, undefined, "/publishing"),
+
+  getPublishing: (id: string): Promise<PublishingJob> =>
+    apiFetch<PublishingJob>(
+      `${API_BASE_URL}/publishing/${id}`,
+      undefined,
+      `/publishing/${id}`,
+    ),
+
+  approvePublishingSource: (id: string, body: ApproveSourceRequest): Promise<PublishingJob> =>
+    apiFetch<PublishingJob>(
+      `${API_BASE_URL}/publishing/${id}/approve-source`,
+      { method: "POST", body: JSON.stringify(body) },
+      `/publishing/${id}/approve-source`,
+    ),
+
+  approvePublishingUpload: (id: string, body: ApproveUploadRequest): Promise<PublishingJob> =>
+    apiFetch<PublishingJob>(
+      `${API_BASE_URL}/publishing/${id}/approve-upload`,
+      { method: "POST", body: JSON.stringify(body) },
+      `/publishing/${id}/approve-upload`,
+    ),
+
+  reviewPublishing: (id: string, body: PublishingReviewRequest): Promise<PublishingJob> =>
+    apiFetch<PublishingJob>(
+      `${API_BASE_URL}/publishing/${id}/review`,
+      { method: "POST", body: JSON.stringify(body) },
+      `/publishing/${id}/review`,
+    ),
+
+  getPublishingMetrics: (): Promise<PublishingMetrics> =>
+    apiFetch<PublishingMetrics>(
+      `${API_BASE_URL}/publishing/metrics`,
+      undefined,
+      "/publishing/metrics",
+    ),
 
   // Multipart upload — file body, not JSON.
   uploadAsset: async (file: File): Promise<UploadResponse> => {

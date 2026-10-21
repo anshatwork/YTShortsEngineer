@@ -48,6 +48,42 @@ def run_job(job_id: str, request: "JobRequest", user_id: str | None = None) -> N
         _run_job_impl(job_id, request, user_id)
 
 
+def _refund_clip_credits(job_id: str, user_id: str | None) -> None:
+    """Return the clip-job's credits after a failure (see credits.refund_for_op).
+    Idempotent on the job id, so a retried failure refunds only once."""
+    from agents.long_to_shorts.api.credits import refund_for_op
+    refund_for_op(user_id, "clip", key=f"refund:{job_id}")
+
+
+def _clips_from_state(state: dict) -> list:
+    """Convert the pipeline's ``generated_clips`` ClipObject dicts → ClipResult models.
+
+    Reused for both incremental mid-run persistence and the terminal write, so the
+    frontend can surface playable clips as soon as they're extracted and keep them
+    updating in place as enhancement nodes refine each clip.
+    """
+    from agents.long_to_shorts.api.models import ClipResult
+
+    return [
+        ClipResult(
+            clip_id=c["clip_id"],
+            path=c.get("path"),
+            timestamp_range=tuple(c["timestamp_range"]),
+            hook_score=c["hook_score"],
+            title=c.get("title"),
+            summary=c.get("summary"),
+            hook_text=c.get("hook_text"),
+            hashtags=c.get("hashtags"),
+            thumbnail_path=c.get("thumbnail_path"),
+            music_theme=c.get("music_theme"),
+            music_title=c.get("music_title"),
+            music_source=c.get("music_source"),
+            music_attribution=c.get("music_attribution"),
+        )
+        for c in state.get("generated_clips", [])
+    ]
+
+
 def _resolve_byok_credential(user_id: str | None, job_id: str):
     """Return the user's BYOK LLMCredential, or None to use our default provider.
 
@@ -88,7 +124,6 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
     """
     # Late imports keep module load fast (heavy deps: torch, whisper, ffmpeg…)
     from agents.long_to_shorts.api.job_store import job_store
-    from agents.long_to_shorts.api.models import ClipResult
     from agents.long_to_shorts import long_to_shorts_app
     import time
 
@@ -103,6 +138,7 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
     except ImportError as exc:
         logger.error("Could not import run_clipping_workflow helpers: %s", exc)
         job_store.update(job_id, status="failed", error=str(exc))
+        _refund_clip_credits(job_id, user_id)
         return
 
     # ------------------------------------------------------------------
@@ -210,8 +246,29 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
 
         t0 = time.time()
         logger.info("[job:%s] invoking LangGraph pipeline …", job_id)
+        # Stream (not invoke) so we can persist clips incrementally: as soon as a
+        # node yields a state with rendered clips, write them to the job store.
+        # EventEmittingStore turns each update() into an SSE `update`, so the
+        # frontend surfaces playable clips mid-run instead of waiting for `done`.
+        # `stream_mode="values"` yields the full accumulated state after each
+        # super-step, so the last value is the complete final state.
+        final_state = initial_state
+        last_clip_sig: tuple | None = None
         with llm_credential_context(byok_credential):
-            final_state = long_to_shorts_app.invoke(initial_state)
+            for state in long_to_shorts_app.stream(
+                initial_state, stream_mode="values"
+            ):
+                final_state = state
+                partial = _clips_from_state(state)
+                if not partial:
+                    continue
+                # Only emit when the clip set actually changed (a new clip or an
+                # updated path) — avoids an SSE frame for nodes that don't touch
+                # clips. status stays "running"; the terminal write flips it.
+                sig = tuple((c.clip_id, c.path) for c in partial)
+                if sig != last_clip_sig:
+                    last_clip_sig = sig
+                    job_store.update(job_id, clips=partial)
         elapsed = time.time() - t0
 
         # ----------------------------------------------------------------
@@ -226,27 +283,134 @@ def _run_job_impl(job_id: str, request: "JobRequest", user_id: str | None = None
         # ----------------------------------------------------------------
         # Phase 5: Convert ClipObject dicts → ClipResult Pydantic models
         # ----------------------------------------------------------------
-        clips = [
-            ClipResult(
-                clip_id=c["clip_id"],
-                path=c.get("path"),
-                timestamp_range=tuple(c["timestamp_range"]),
-                hook_score=c["hook_score"],
-                title=c.get("title"),
-                summary=c.get("summary"),
-                hook_text=c.get("hook_text"),
-                hashtags=c.get("hashtags"),
-                thumbnail_path=c.get("thumbnail_path"),
-                music_theme=c.get("music_theme"),
-                music_title=c.get("music_title"),
-                music_source=c.get("music_source"),
-                music_attribution=c.get("music_attribution"),
-            )
-            for c in final_state.get("generated_clips", [])
-        ]
+        clips = _clips_from_state(final_state)
 
         job_store.update(job_id, status="done", clips=clips, current_node="done")
+
+        # Opt-in auto-publish: if the user asked for it before the run, upload
+        # every rendered clip to their YouTube channel now. Best-effort — never
+        # affects the (already successful) clip job.
+        _maybe_enqueue_auto_uploads(job_id, request, user_id, clips)
+
+        # Additive KG hook: feed the source video into the knowledge graph so its
+        # understanding accumulates. Idempotent (content-hash keys) and fully
+        # decoupled — a KG failure never affects the completed clip job.
+        _maybe_enqueue_kg_ingestion(job_id, request, user_id, video_path)
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("[job:%s] failed: %s", job_id, exc)
         job_store.update(job_id, status="failed", error=str(exc))
+        _refund_clip_credits(job_id, user_id)
+
+
+def _maybe_enqueue_auto_uploads(
+    job_id: str,
+    request: "JobRequest",
+    user_id: str | None,
+    clips: list,
+) -> None:
+    """Auto-publish every rendered clip to YouTube when the user opted in before
+    the run (``request.auto_upload``).
+
+    Best-effort and fully decoupled from the clip job's success:
+      * no account connected  → log + skip (the job still succeeds);
+      * per-clip metadata is derived from the generated title/summary/hashtags;
+      * each upload reuses the same runner/idempotency path as manual uploads.
+    Any error here is swallowed — a publish hiccup must never fail the clip job.
+    """
+    try:
+        if not getattr(request, "auto_upload", False):
+            return
+        if not user_id:
+            logger.info("[job:%s] auto-upload requested but no user id; skipping.", job_id)
+            return
+
+        # Require a connected YouTube account (a refresh token). Skip cleanly
+        # otherwise — we can't (and shouldn't) publish without one.
+        from agents.long_to_shorts.api.youtube_credentials_store import (
+            youtube_credentials_store,
+        )
+
+        record = youtube_credentials_store.get(user_id)
+        if not record or not record.get("refresh_token"):
+            logger.warning(
+                "[job:%s] auto-upload requested but no YouTube account connected; "
+                "skipping (connect YouTube, then re-run or upload manually).",
+                job_id,
+            )
+            return
+
+        from agents.long_to_shorts.api.models import YouTubeUploadRequest
+        from agents.long_to_shorts.api.youtube_upload_store import youtube_upload_store
+        from agents.long_to_shorts.api.youtube_upload_runner import run_youtube_upload_job
+        from core.execution import get_task_queue
+
+        privacy = getattr(request, "auto_upload_privacy", "public") or "public"
+        queue = get_task_queue()
+
+        enqueued = 0
+        for clip in clips:
+            if not clip.path:
+                continue  # nothing rendered to upload
+            title = (clip.title or clip.hook_text or clip.clip_id)[:100]
+            tags = [
+                t.lstrip("#").strip()
+                for t in (clip.hashtags or [])
+                if t and t.strip()
+            ]
+            upload = youtube_upload_store.create(
+                user_id=user_id,
+                parent_job_id=job_id,
+                clip_id=clip.clip_id,
+                title=title,
+                privacy_status=privacy,
+            )
+            req = YouTubeUploadRequest(
+                parent_job_id=job_id,
+                clip_id=clip.clip_id,
+                title=title,
+                description=(clip.summary or "")[:5000],
+                tags=tags,
+                privacy_status=privacy,
+            )
+            queue.enqueue(run_youtube_upload_job, upload.upload_id, req, user_id)
+            enqueued += 1
+
+        logger.info(
+            "[job:%s] auto-upload enqueued %d clip(s) as %s.",
+            job_id, enqueued, privacy,
+        )
+    except Exception as exc:  # noqa: BLE001 — auto-upload is best-effort
+        logger.warning("[job:%s] auto-upload enqueue skipped: %s", job_id, exc)
+
+
+def _maybe_enqueue_kg_ingestion(
+    job_id: str, request: "JobRequest", user_id: str | None, video_path: str
+) -> None:
+    """Register + enqueue KG ingestion of the clip job's source (best-effort).
+
+    Gated by KG_ENABLED so it is a no-op unless the graph is turned on. Any error
+    here is swallowed — the clip job has already succeeded and must not be affected.
+    """
+    try:
+        from core.kg import driver
+
+        if not driver.kg_enabled():
+            return
+        from agents.long_to_shorts.api.asset_store import asset_store
+        from agents.long_to_shorts.api.ingestion_job_store import ingestion_job_store
+        from agents.long_to_shorts.api.ingestion_runner import run_ingestion
+        from core.execution import get_task_queue
+
+        uri = request.youtube_url or video_path
+        owner = user_id or "00000000-0000-0000-0000-000000000001"
+        asset = asset_store.register(
+            user_id=owner, media_type="video", uri=uri,
+            filename=request.video_filename, title=None,
+        )
+        ing = ingestion_job_store.create(asset.asset_id, user_id=owner)
+        get_task_queue().enqueue(run_ingestion, ing.ingestion_job_id, asset.asset_id, owner)
+        logger.info("[job:%s] KG ingestion enqueued — ingestion_job=%s asset=%s",
+                    job_id, ing.ingestion_job_id, asset.asset_id)
+    except Exception as exc:  # noqa: BLE001 — KG is best-effort, never fail the clip job
+        logger.warning("[job:%s] KG ingestion enqueue skipped: %s", job_id, exc)

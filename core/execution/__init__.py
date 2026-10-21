@@ -14,6 +14,7 @@ so production backends are config-only swaps.
 
 from core.execution.eventbus import Event, EventBus, get_event_bus
 from core.execution.taskqueue import TaskQueue, get_task_queue
+from core.execution.sqs_taskqueue import SqsTaskQueue
 from core.execution import lifecycle
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "get_event_bus",
     "TaskQueue",
     "get_task_queue",
+    "SqsTaskQueue",
     "lifecycle",
 ]

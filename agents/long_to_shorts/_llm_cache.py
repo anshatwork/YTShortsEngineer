@@ -31,6 +31,10 @@ def _model_id() -> str:
     provider = os.getenv("LLM_PROVIDER", "claude").lower()
     if provider == "claude":
         return os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+    if provider == "openrouter":
+        return os.getenv("OPENROUTER_MODEL", "openrouter/free")
+    if provider == "glm":
+        return os.getenv("GLM_MODEL", "glm-4.5-flash")
     return (
         os.getenv("OLLAMA_MODEL")
         or os.getenv("LLM_MODEL_ID")

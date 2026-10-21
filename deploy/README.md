@@ -1,103 +1,103 @@
-# Deploy — single-EC2 launch topology
+# Hosted deployment
 
-The cheapest live setup: **one EC2** running the API + pipeline workers in Docker
-behind **Caddy** (auto-HTTPS). Ollama runs on a **separate GPU EC2**; Supabase and
-S3/CloudFront are managed. See `../<plan>` for the full architecture.
+This is the launch topology: one small CPU host for the API, ffmpeg, and
+in-process workers. Ollama and the learning OS are not deployed.
 
-```
-Browser ──► Cloudflare Pages / Amplify (Next.js frontend)
-                       │  NEXT_PUBLIC_API_URL
-                       ▼
-        Caddy (443, TLS) ──► api:8000  (FastAPI + ThreadPool workers)   ← this EC2
-                       │
-       ┌───────────────┼────────────────────────┐
-       ▼               ▼                         ▼
-  GPU EC2 :11434   Supabase (DB+Auth)      S3 + CloudFront (clips)
-  (Ollama, private)  (managed)             (signed URLs, lifecycle expiry)
+```text
+Cloudflare Pages (Next.js)
+          |
+     Caddy + TLS
+          |
+FastAPI + ffmpeg host ---- OpenRouter
+          |                Supabase Auth/Postgres
+          +---------------- S3 + CloudFront
 ```
 
-## 1. Provision
+## Launch configuration
 
-- **App EC2**: start with `t3.large` (2 vCPU / 8 GB). ffmpeg is CPU-bound — size up
-  to `c7i.xlarge`/`c6i` if encode latency hurts. Install Docker + compose plugin.
-- **GPU EC2**: `g4dn.xlarge`, private subnet, security group allowing **11434 only
-  from the app EC2's SG**. Install Ollama + `ollama pull qwen2.5:7b-instruct`.
-  **Do not leave it running 24/7** — schedule start/stop via EventBridge, or wire
-  scale-to-zero later.
-- **DNS**: point `api.example.com` at the app EC2's elastic IP.
+Use a Lightsail 2 vCPU/2 GB instance or equivalent. Increase memory before
+increasing worker concurrency. Run one API container because the task queue and
+event bus are process-local at launch.
 
-## 2. Configure secrets on the box
-
-Create `/opt/ytshorts/.env` (gitignored; or render it from SSM/Secrets Manager at
-boot). Required variables:
-
-```bash
-# --- Caddy / TLS ---
+```dotenv
+ENVIRONMENT=production
+FRONTEND_URL=https://app.example.com
 DOMAIN=api.example.com
-ACME_EMAIL=you@example.com
-FRONTEND_URL=https://app.example.com         # CORS allow-list (no trailing slash)
-ENVIRONMENT=production                        # disables /docs, tightens config
+ACME_EMAIL=ops@example.com
 
-# --- Supabase (rotate the keys that were committed!) ---
-SUPABASE_URL=https://xxxx.supabase.co
-SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-SUPABASE_JWT_SECRET=...
+JOB_STORE=supabase
+SUBSCRIPTION_STORE=supabase
+CREDIT_STORE=supabase
+QUOTA_ENABLED=true
+CREDITS_ENABLED=true
+PLAN_FREE_MONTHLY_JOBS=3
+CREDITS_GRANT_FREE=30
+CREDITS_COST_CLIP=10
 
-# --- LLM: default GPU Ollama (private IP of the GPU EC2) ---
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://10.0.x.x:11434
-OLLAMA_MODEL=qwen2.5:7b-instruct
-ENABLE_LLM_FALLBACK=false                     # don't silently fall back off-box
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=...
+OPENROUTER_MAX_TOKENS=1024
+OPENROUTER_TIMEOUT=60
+ENABLE_LLM_FALLBACK=false
+LLM_LOCAL_ONLY=false
 
-# --- BYOK credential encryption (Phase 2) ---
-BYOK_FERNET_KEY=...                           # cryptography.fernet.Fernet.generate_key()
-
-# --- Storage (Phase 3) ---
 BLOB_STORE_BACKEND=s3
 BLOB_S3_BUCKET=ytshorts-artifacts
-BLOB_S3_REGION=us-east-1
-CLOUDFRONT_DOMAIN=dxxxx.cloudfront.net
-CLOUDFRONT_KEY_PAIR_ID=...
-CLOUDFRONT_PRIVATE_KEY_PATH=/run/secrets/cf_private_key.pem
+BLOB_S3_REGION=...
+CLOUDFRONT_DOMAIN=...
 
-# --- External APIs ---
-YT_API_KEY=...
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-YOUTUBE_OAUTH_REDIRECT_URI=https://api.example.com/api/v1/youtube/auth/callback
-JAMENDO_CLIENT_ID=...
-
-# --- Payments (Phase 5) ---
-STRIPE_SECRET_KEY=...
-STRIPE_WEBHOOK_SECRET=...
-RAZORPAY_KEY_ID=...
-RAZORPAY_KEY_SECRET=...
-RAZORPAY_WEBHOOK_SECRET=...
-
-# --- Encode tuning (predictable resource use) ---
-CLIP_X264_PRESET=veryfast
-CLIP_WORKER_THREADS=2
+TASK_QUEUE_BACKEND=threadpool
+EVENT_BUS_BACKEND=memory
 WORKER_THREADS=2
 ```
 
-> The app loads `.env` automatically (see `agents/long_to_shorts/api/app.py`).
-> Prefer rendering this file from SSM Parameter Store (SecureString) at instance
-> boot so secrets never sit in git or an AMI.
+Store secrets in SSM/Secrets Manager and render the runtime environment at
+boot. Do not put `.env` in an image, AMI, or repository.
 
-## 3. Run
+## Production checklist
 
-```bash
-docker compose up -d --build
-docker compose logs -f api
-curl -fsS https://api.example.com/health
-```
+1. Rotate previously exposed Supabase, Google, OpenRouter, and payment secrets.
+2. Apply every migration in `supabase/migrations/`, including `013_payment_events.sql`.
+3. Set Supabase Auth site and redirect URLs to the production frontend.
+4. Use a private S3 bucket, CloudFront Origin Access Control, signed URLs, and
+   a 7–30 day artifact lifecycle rule.
+5. Restrict the host firewall to 80/443 and administrator SSH only.
+6. Start with test-mode Stripe and Razorpay webhooks; switch to live secrets
+   only after the end-to-end payment tests pass.
+7. Confirm `/health`, signup, job submission, signed download, quota rejection,
+   checkout, and webhook replay behavior.
 
-## 4. Notes
+## Scaling path
 
-- Concurrency = in-process `WORKER_THREADS`; the task queue is in-memory, so run a
-  **single** api container until `TASK_QUEUE_BACKEND` moves to SQS/Celery.
-- Logs go to container stdout (json-file, rotated) **and** `./logs` on the host.
-  Run the CloudWatch agent on the host to ship them; set log-group retention.
-- `OUTPUT_DIR`/`ASSET_CACHE_DIR` are ephemeral `/tmp` scratch — finished clips are
-  uploaded to S3 and served via CloudFront signed URLs.
+When queue depth or job age requires more capacity:
+
+- Persist the job before enqueueing it.
+- Move queue work to a durable managed broker and run separate API and worker
+  services. The current thread pool is intentionally launch-only.
+- The first supported hosted adapter is SQS: set `TASK_QUEUE_BACKEND=sqs`,
+  provide `TASK_QUEUE_URL`, and run `python scripts/sqs_worker.py` in worker
+  containers with a dead-letter queue configured.
+- Keep Supabase `cache_entries` as the shared metadata index and S3 as the
+  shared blob store; add Redis only for hot locks, rate limits, and ephemeral
+  progress fan-out.
+- Replace the process-local event bus with Redis Pub/Sub or managed realtime
+  before running multiple API replicas.
+- Scale ffmpeg workers and inference workers independently, with queue-depth
+  autoscaling and bounded concurrency.
+- Make retries idempotent using job IDs and content-addressed cache keys.
+
+## Payments
+
+Stripe uses hosted Checkout and signed webhooks. Razorpay handles India and
+UPI Autopay subscriptions. A browser redirect never activates a subscription;
+only a verified webhook may do that. `payment_events` provides durable event
+deduplication, while the credit ledger remains the balance source of truth.
+
+## Supabase retention
+
+Preserve users, subscriptions, credits, credentials, and successful uploads.
+Archive or delete expired cache rows, failed/abandoned jobs, old execution
+journals, stale trend data, and orphaned rows according to the retention policy.
+Export first; never truncate `auth.users` as part of routine cleanup.

@@ -5,7 +5,15 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { POLL_INTERVAL_RUNNING } from "@/lib/constants";
 import { useJobStore } from "@/store/jobStore";
-import type { YouTubeUploadJob, YouTubeUploadRequest } from "@/types/api";
+import type {
+  YouTubeUploadJob,
+  YouTubeUploadListResponse,
+  YouTubeUploadRequest,
+} from "@/types/api";
+
+/** Broad key for a user's upload lists — invalidate it after any submit so the
+ * per-clip badges refetch and pick up the newly queued upload. */
+export const YOUTUBE_UPLOADS_KEY = "youtube-uploads";
 
 // ─── Connection status ────────────────────────────────────────────────────────
 export function useYouTubeAuthStatus() {
@@ -58,12 +66,47 @@ export function useDisconnectYouTube() {
 
 // ─── Submit an upload ───────────────────────────────────────────────────────--
 export function useSubmitYouTubeUpload() {
+  const queryClient = useQueryClient();
   const { addToast } = useJobStore();
   return useMutation({
     mutationFn: (body: YouTubeUploadRequest) => api.submitYouTubeUpload(body),
+    onSuccess: () => {
+      // Refetch per-clip upload lists so the card's Published/Uploading badge
+      // reflects the new upload (prefix match covers every clip-specific key).
+      queryClient.invalidateQueries({ queryKey: [YOUTUBE_UPLOADS_KEY] });
+    },
     onError: (err: Error) => {
       addToast(err.message, "error");
     },
+  });
+}
+
+// ─── List a clip's upload history (drives the persistent "Published" badge) ───
+export function useYouTubeUploadsForClip(
+  parentJobId: string | null,
+  clipId: string | null,
+) {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+
+  return useQuery<YouTubeUploadListResponse>({
+    queryKey: [YOUTUBE_UPLOADS_KEY, userId, parentJobId, clipId],
+    queryFn: () =>
+      api.listYouTubeUploads({
+        parent_job_id: parentJobId ?? undefined,
+        clip_id: clipId ?? undefined,
+      }),
+    enabled: !!parentJobId && userId !== null,
+    // Poll only while an upload is in flight; once terminal we stop and rely on
+    // mount / window-focus / post-submit invalidation to stay fresh.
+    refetchInterval: (query) => {
+      const uploads = query.state.data?.uploads ?? [];
+      const inFlight = uploads.some(
+        (u) => u.status === "running" || u.status === "queued",
+      );
+      return inFlight ? POLL_INTERVAL_RUNNING : false;
+    },
+    refetchOnWindowFocus: true,
   });
 }
 

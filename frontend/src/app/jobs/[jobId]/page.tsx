@@ -35,9 +35,17 @@ export default function JobPage({ params }: Props) {
     return <JobNotFound jobId={jobId} />;
   }
 
-  const hasClips =
-    job?.status === "done" &&
-    (clips.length > 0 || (job.clips && job.clips.length > 0));
+  // Show clips as soon as they're playable — the runner persists clips
+  // incrementally, so playable clips (path set) stream in while the job is
+  // still running and refine in place as later stages finish.
+  const allClips = clips.length > 0 ? clips : job?.clips ?? [];
+  const isRunning = job?.status === "running" || job?.status === "queued";
+  // While running, only surface playable clips (path set). When done, show
+  // everything so any failed/null-path clip still appears as before.
+  const visibleClips = isRunning
+    ? allClips.filter((c) => !!c.path)
+    : allClips;
+  const showGrid = visibleClips.length > 0;
 
   return (
     <div className="-mt-2 space-y-8">
@@ -127,11 +135,11 @@ export default function JobPage({ params }: Props) {
             </h2>
           </div>
         </Reveal>
-        {hasClips ? (
-          <ClipsGrid
-            clips={clips.length > 0 ? clips : job!.clips ?? []}
-            jobId={jobId}
-          />
+        {showGrid ? (
+          <div className="space-y-4">
+            {isRunning && <StillGeneratingBanner />}
+            <ClipsGrid clips={visibleClips} jobId={jobId} />
+          </div>
         ) : (
           <WaitingCanvas status={job?.status} />
         )}
@@ -182,6 +190,20 @@ function JobNotFound({ jobId }: { jobId: string }) {
           ← Back to workspace
         </Link>
       </div>
+    </div>
+  );
+}
+
+function StillGeneratingBanner() {
+  return (
+    <div className="flex items-center gap-3 border border-rule-soft bg-paper px-4 py-3">
+      <span
+        aria-hidden
+        className="inline-block w-[7px] h-[7px] rounded-full bg-ink ink-pulse shrink-0"
+      />
+      <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-ink-soft">
+        Still generating — clips appear and update as stages finish
+      </p>
     </div>
   );
 }

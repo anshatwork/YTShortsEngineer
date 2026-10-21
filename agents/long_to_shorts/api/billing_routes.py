@@ -73,6 +73,16 @@ def _frontend_base() -> str:
             or "http://localhost:3000")
 
 
+def _grant_plan_credits(user_id: str, plan: str, provider: str) -> None:
+    """Grant the plan's monthly credit allowance, at most once per user per UTC
+    month. The idempotency key is period-scoped, so the initial purchase, each
+    renewal/charge, and any webhook replay together grant exactly once per month."""
+    from agents.long_to_shorts.api.credits import grant_for_plan
+    from agents.long_to_shorts.api.db.credit_store import period_start_utc
+
+    grant_for_plan(user_id, plan, key=f"{provider}:{user_id}:{period_start_utc()}")
+
+
 def _stripe():
     """Return the configured stripe module, or raise 503 if not set up."""
     key = os.getenv("STRIPE_SECRET_KEY")
@@ -115,11 +125,14 @@ class CheckoutOut(BaseModel):
 @router.get("/plans", summary="Available plans and configured providers")
 async def list_plans() -> dict:
     from agents.long_to_shorts.api.quota import _limits
+    from agents.long_to_shorts.api.credits import _grants
 
     limits = _limits()
+    grants = _grants()
     return {
         "plans": [
-            {"id": p, "monthly_jobs": limits.get(p)} for p in ("free",) + _PAID_PLANS
+            {"id": p, "monthly_jobs": limits.get(p), "monthly_credits": grants.get(p)}
+            for p in ("free",) + _PAID_PLANS
         ],
         "providers": {
             "stripe": bool(os.getenv("STRIPE_SECRET_KEY")),
@@ -205,6 +218,11 @@ async def stripe_webhook(request: Request) -> dict:
 
     etype = event["type"]
     obj = event["data"]["object"]
+    event_id = event.get("id")
+    if event_id:
+        from agents.long_to_shorts.api.db.payment_event_store import payment_event_store
+        if not payment_event_store.claim("stripe", event_id):
+            return {"received": True, "duplicate": True}
     logger.info("Stripe webhook — id=%s type=%s", event.get("id"), etype)
 
     from agents.long_to_shorts.api.db.subscription_store import subscription_store
@@ -219,6 +237,7 @@ async def stripe_webhook(request: Request) -> dict:
                 provider_customer_id=obj.get("customer"),
                 provider_subscription_id=obj.get("subscription"),
             )
+            _grant_plan_credits(user_id, plan, "stripe")
     elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
         sub_id = obj.get("id")
         row = subscription_store.find_by_provider_subscription("stripe", sub_id) if sub_id else None
@@ -229,6 +248,10 @@ async def stripe_webhook(request: Request) -> dict:
             cpe = (datetime.fromtimestamp(period_end, tz=timezone.utc).isoformat()
                    if period_end else None)
             subscription_store.update_status(row["user_id"], status=new_status, current_period_end=cpe)
+            # A renewal (updated → active in a new month) tops up credits; the
+            # period-scoped key keeps this idempotent within a month.
+            if new_status == "active":
+                _grant_plan_credits(row["user_id"], row.get("plan", "free"), "stripe")
 
     return {"received": True}
 
@@ -261,6 +284,11 @@ async def razorpay_webhook(request: Request) -> dict:
     import json
     event = json.loads(payload)
     etype = event.get("event", "")
+    event_id = event.get("id") or event.get("event_id")
+    if event_id:
+        from agents.long_to_shorts.api.db.payment_event_store import payment_event_store
+        if not payment_event_store.claim("razorpay", event_id):
+            return {"received": True, "duplicate": True}
     logger.info("Razorpay webhook — type=%s", etype)
 
     sub_entity = (
@@ -279,6 +307,9 @@ async def razorpay_webhook(request: Request) -> dict:
                 user_id=user_id, plan=plan, status="active", provider="razorpay",
                 provider_subscription_id=sub_id,
             )
+            # activated/charged fire on purchase and each renewal; period-scoped
+            # key grants the monthly allowance exactly once per month.
+            _grant_plan_credits(user_id, plan, "razorpay")
     elif etype in ("subscription.cancelled", "subscription.completed", "subscription.halted"):
         row = (subscription_store.find_by_provider_subscription("razorpay", sub_id)
                if sub_id else None)
